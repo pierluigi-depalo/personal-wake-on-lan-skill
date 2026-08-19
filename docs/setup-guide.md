@@ -121,17 +121,15 @@ The handler persists the Event Gateway access/refresh tokens here after account 
      - `AWS_REGION`: AWS region used by the AWS SDK clients; defaults to `eu-west-1`
      - `DYNAMODB_TABLE_NAME`: defaults to `AlexaEventTokens`
      - `ALEXA_EVENT_GATEWAY_URL`: defaults to `https://api.eu.amazonalexa.com/v3/events`. North America: `https://api.amazonalexa.com/v3/events`; Far East: `https://api.fe.amazonalexa.com/v3/events`
-     - `ASYNC_LAMBDA_NAME`: the function invoked asynchronously for TurnOn. Defaults to the current function's own name (`AWS_LAMBDA_FUNCTION_NAME`), so you usually don't need to set it
      - `ENDPOINT_ID`: defaults to `wol-pc-001` (single-device mode)
      - `PC_FRIENDLY_NAME`: defaults to `PC`
 3. **Deploy Handler Code**:
-   - The handler imports `@aws-sdk/client-dynamodb` and `@aws-sdk/client-lambda`, which are bundled in the Node.js Lambda runtime — no dependencies to install, no zip required.
+   - The handler imports `@aws-sdk/client-dynamodb`, which is bundled in the Node.js Lambda runtime — no dependencies to install, no zip required.
    - Copy the contents of [`src/index.js`](../src/index.js) into the Lambda inline code editor and click **Deploy**.
 4. **Grant the Lambda IAM permissions** (the role created with the function):
    - Go to **Configuration** → **Permissions** → click the role name (opens IAM).
    - Add an inline policy (or attach managed policies) allowing, on your resources:
-     - DynamoDB: `GetItem` and `PutItem` (the minimum for the current code — `DeleteItem` is only needed if you use `deleteTokens()` helper)
-     - Lambda: `InvokeFunction` on this function (needed for the async TurnOn self-invocation)
+     - DynamoDB: `GetItem` and `PutItem` (the actions the handler actually uses)
    - The default `AWSLambdaBasicExecutionRole` (CloudWatch Logs) is added automatically.
 5. **Grant Alexa Invocation Permissions**:
    - Go to **Configuration** → **Permissions** → **Resource-based policy statements** → **Add permissions**.
@@ -255,7 +253,7 @@ The handler persists the Event Gateway access/refresh tokens here after account 
      }
    }
    ```
-   Expected: an `Alexa.DeferredResponse` (estimated deferral 15s) — the handler invokes itself asynchronously to run the WakeUp workflow. The async step sends the `WakeUp` event to the Event Gateway and then the final `Alexa.Response` (`powerState: ON`); without account linking it will fail with "No stored Event Gateway token..." in CloudWatch Logs, which is expected until Step 5 has completed.
+   Expected: an `Alexa.Response` with `powerState: ON` — the handler runs the WakeUp workflow synchronously (sends the `WakeUp` event to the Event Gateway, then returns the success response). Without account linking it will fail with "No stored Event Gateway token..." in CloudWatch Logs, which is expected until Step 5 has completed.
 
 ### Level 2 — End-to-End Test with Alexa
 
@@ -268,7 +266,7 @@ This validates the real hardware layer (Echo broadcast & PC motherboard wake):
 4. Verify:
    - Alexa replies *"OK"*.
    - PC physically boots up.
-5. If the PC does not wake, check CloudWatch Logs for the async invocation: it should show `WakeUp accepted by Event Gateway` and `Final Alexa Response accepted`.
+5. If the PC does not wake, check CloudWatch Logs for the invocation: it should show `WakeUp accepted by Event Gateway` before returning the response.
 
 ---
 
@@ -277,7 +275,7 @@ This validates the real hardware layer (Echo broadcast & PC motherboard wake):
 | Symptom | What to Check |
 |---|---|
 | **Alexa cannot discover devices** | Check AWS CloudWatch Logs. Verify `Discover` directive was received and `WOL_DEVICES` or `MAC_ADDRESS` is correctly configured in Lambda environment variables. |
-| **Lambda fails with missing env vars** | `requireConfig()` requires `ALEXA_CLIENT_ID` and `ALEXA_CLIENT_SECRET` (from the skill's Send Alexa Events permission) on every invocation. `DYNAMODB_TABLE_NAME` and `ASYNC_LAMBDA_NAME` are also checked but have defaults, so they only fail if you explicitly clear them. |
+| **Lambda fails with missing env vars** | `requireConfig()` requires `ALEXA_CLIENT_ID` and `ALEXA_CLIENT_SECRET` (from the skill's Send Alexa Events permission) on every invocation. `DYNAMODB_TABLE_NAME` is also checked but has a default, so it only fails if you explicitly clear it. |
 | **"No stored Event Gateway token..." in logs** | Account linking has not completed (or tokens were lost). Re-enable the skill in the Alexa App to trigger `AcceptGrant` again. |
 | **DynamoDB errors (ResourceNotFoundException / AccessDenied)** | The `AlexaEventTokens` table doesn't exist, or the Lambda role lacks `GetItem`/`PutItem` on it. |
 | **"WakeUp rejected by Event Gateway"** | Verify `ALEXA_CLIENT_ID`/`ALEXA_CLIENT_SECRET` match the skill's Send Alexa Events credentials and that the permission is enabled. Also confirm `ALEXA_EVENT_GATEWAY_URL` matches your skill region. |
@@ -293,7 +291,7 @@ The Lambda function responds to these directive types:
 | Directive | Namespace & Name | Action / Response |
 |---|---|---|
 | **Discovery** | `Alexa.Discovery / Discover` | Returns endpoint(s) with `Alexa.WakeOnLANController` (including configured MAC address) and `Alexa.PowerController`. |
-| **Turn On** | `Alexa.PowerController / TurnOn` | Returns `Alexa.DeferredResponse` immediately, then asynchronously sends a `WakeUp` event to the Alexa Event Gateway and the final `Alexa.Response` with `powerState: ON`. Alexa simultaneously instructs the local Echo to broadcast the WoL packet on the LAN. |
+| **Turn On** | `Alexa.PowerController / TurnOn` | Sends a `WakeUp` event to the Alexa Event Gateway synchronously and returns `Alexa.Response` with `powerState: ON`. Alexa simultaneously instructs the local Echo to broadcast the WoL packet on the LAN. |
 | **Turn Off** | `Alexa.PowerController / TurnOff` | Returns an `ErrorResponse` (`NOT_SUPPORTED_IN_CURRENT_MODE`) — Wake-on-LAN cannot turn a powered-off PC off. |
 | **State Reporting** | `Alexa / ReportState` | Returns `powerState: OFF` (a WoL endpoint is reported off when the PC isn't running). |
 | **Authorization** | `Alexa.Authorization / AcceptGrant` | Exchanges the authorization code for Event Gateway tokens and stores them in DynamoDB. |
