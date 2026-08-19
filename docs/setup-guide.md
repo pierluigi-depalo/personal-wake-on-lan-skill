@@ -9,7 +9,7 @@ A complete, step-by-step guide to building, configuring, and deploying your own 
 1. [Prerequisites](#prerequisites)
 2. [Step 1: PC Configuration](#step-1-pc-configuration)
 3. [Step 2: Login with Amazon (LWA) Security Profile](#step-2-login-with-amazon-lwa-security-profile)
-4. [Step 3: AWS Lambda Function](#step-3-aws-lambda-function)
+4. [Step 3: AWS Resources (DynamoDB + Lambda)](#step-3-aws-resources-dynamodb--lambda)
 5. [Step 4: Alexa Smart Home Skill Setup](#step-4-alexa-smart-home-skill-setup)
 6. [Step 5: Account Linking & Discovery](#step-5-account-linking--discovery)
 7. [Testing](#testing)
@@ -22,7 +22,7 @@ A complete, step-by-step guide to building, configuring, and deploying your own 
 
 Before starting, ensure you have:
 
-- An **AWS Account** (Free tier is sufficient; uses Lambda & CloudWatch Logs).
+- An **AWS Account** (Free tier is sufficient; uses Lambda, DynamoDB & CloudWatch Logs).
 - An **Amazon Developer Account** ([developer.amazon.com](https://developer.amazon.com)).
 - An **Amazon Echo device** connected to the **same local area network (LAN)** as your target PC.
 - A **wired Ethernet connection** for the target PC (Wake-on-LAN is generally not supported over Wi-Fi when powered off).
@@ -76,9 +76,9 @@ Alexa Smart Home skills require OAuth 2.0 account linking. Using Amazon's built-
 
 ---
 
-## Step 3: AWS Lambda Function
+## Step 3: AWS Resources (DynamoDB + Lambda)
 
-The Lambda function handles discovery directives from Alexa, returning your PC's MAC address and capabilities.
+The handler stores Alexa Event Gateway tokens in **DynamoDB** and runs as a **Lambda function** that answers Alexa directives.
 
 ### Region Requirements
 > [!IMPORTANT]
@@ -86,10 +86,24 @@ The Lambda function handles discovery directives from Alexa, returning your PC's
 > - **North America**: `us-east-1` (N. Virginia) or `us-west-2` (Oregon)
 > - **Europe**: `eu-west-1` (Ireland)
 > - **Far East**: `ap-northeast-1` (Tokyo)
-> 
-> Create your Lambda function in the region closest to your Amazon account location.
+>
+> Create your DynamoDB table and Lambda function in the region closest to your Amazon account location.
+>
+> The handler's default Event Gateway URL is the **EU** endpoint. If you deploy to North America or Far East, you **must** set `ALEXA_EVENT_GATEWAY_URL` (see below).
 
-### Creation & Configuration
+### 3.1 Create the DynamoDB Table
+
+The handler persists the Event Gateway access/refresh tokens here after account linking, so the table **must exist** before TurnOn can work.
+
+1. In the [DynamoDB Console](https://console.aws.amazon.com/dynamodb), click **Create table**.
+2. **Table name**: `AlexaEventTokens` (or your own name — if you change it, set `DYNAMODB_TABLE_NAME` on the Lambda).
+3. **Partition key**: `id` (type **String**).
+4. Leave the rest as defaults (On-demand capacity is fine for personal use) and create the table.
+
+> [!NOTE]
+> The handler uses a fixed key `current_alexa_user`, so the table stores tokens for a single account — this skill is single-tenant by design.
+
+### 3.2 Create the Lambda Function
 
 1. In the [AWS Lambda Console](https://console.aws.amazon.com/lambda), choose a supported region and click **Create function**:
    - **Function name**: `alexa-wake-on-lan`
@@ -97,20 +111,35 @@ The Lambda function handles discovery directives from Alexa, returning your PC's
    - **Architecture**: `arm64` (recommended) or `x86_64`
 2. **Set Environment Variables**:
    - Navigate to **Configuration** → **Environment variables** → **Edit**.
-   - Add:
-     - `MAC_ADDRESS`: Your PC's wired MAC address (e.g. `AA:BB:CC:DD:EE:FF` or `AA-BB-CC-DD-EE-FF`)
-     - `PC_FRIENDLY_NAME`: The default name for voice control (e.g. `Gaming PC` or `Desktop`)
+   - Required:
+     - `ALEXA_CLIENT_ID`: Alexa Client Id from the skill's **Send Alexa Events** permission (see [Step 4](#step-4-alexa-smart-home-skill-setup) — you'll come back here to set these)
+     - `ALEXA_CLIENT_SECRET`: Alexa Client Secret from the same place
+     - One of:
+       - `WOL_DEVICES` (recommended for multiple devices): JSON array, e.g. `[{"endpointId":"office-pc","friendlyName":"Office PC","macAddress":"AA:BB:CC:DD:EE:FF"}]` — keep it on one line
+       - `MAC_ADDRESS`: your PC's wired MAC address (e.g. `AA:BB:CC:DD:EE:FF`)
+   - Optional:
+     - `AWS_REGION`: AWS region used by the AWS SDK clients; defaults to `eu-west-1`
+     - `DYNAMODB_TABLE_NAME`: defaults to `AlexaEventTokens`
+     - `ALEXA_EVENT_GATEWAY_URL`: defaults to `https://api.eu.amazonalexa.com/v3/events`. North America: `https://api.amazonalexa.com/v3/events`; Far East: `https://api.fe.amazonalexa.com/v3/events`
+     - `ASYNC_LAMBDA_NAME`: the function invoked asynchronously for TurnOn. Defaults to the current function's own name (`AWS_LAMBDA_FUNCTION_NAME`), so you usually don't need to set it
+     - `ENDPOINT_ID`: defaults to `wol-pc-001` (single-device mode)
+     - `PC_FRIENDLY_NAME`: defaults to `PC`
 3. **Deploy Handler Code**:
-   - Copy the contents of [`src/index.js`](../src/index.js) and paste it into the Lambda inline code editor (or upload as a zip).
-   - Click **Deploy**.
-4. **Grant Alexa Invocation Permissions**:
+   - The handler imports `@aws-sdk/client-dynamodb` and `@aws-sdk/client-lambda`, which are bundled in the Node.js Lambda runtime — no dependencies to install, no zip required.
+   - Copy the contents of [`src/index.js`](../src/index.js) into the Lambda inline code editor and click **Deploy**.
+4. **Grant the Lambda IAM permissions** (the role created with the function):
+   - Go to **Configuration** → **Permissions** → click the role name (opens IAM).
+   - Add an inline policy (or attach managed policies) allowing, on your resources:
+     - DynamoDB: `GetItem` and `PutItem` (the minimum for the current code — `DeleteItem` is only needed if you use `deleteTokens()` helper)
+     - Lambda: `InvokeFunction` on this function (needed for the async TurnOn self-invocation)
+   - The default `AWSLambdaBasicExecutionRole` (CloudWatch Logs) is added automatically.
+5. **Grant Alexa Invocation Permissions**:
    - Go to **Configuration** → **Permissions** → **Resource-based policy statements** → **Add permissions**.
-   - Select **AWS Service** (or Other):
-     - **Principal**: `alexa-connectedhome.amazon.com`
-     - **Action**: `lambda:InvokeFunction`
-     - **Statement ID**: `alexa-smart-home-invoke`
+   - **Principal**: `alexa-connectedhome.amazon.com`
+   - **Action**: `lambda:InvokeFunction`
+   - **Statement ID**: `alexa-smart-home-invoke`
    - Alternatively, add an **Alexa Smart Home** trigger in the function overview and link your Skill ID once created.
-5. Copy your Lambda function's **ARN** (displayed at the top right of the Lambda console).
+6. Copy your Lambda function's **ARN** (displayed at the top right of the Lambda console).
 
 ---
 
@@ -124,7 +153,10 @@ The Lambda function handles discovery directives from Alexa, returning your PC's
    - **Hosting method**: Select **Provision your own**
 3. In the **Smart Home** configuration screen:
    - Paste your Lambda function's **ARN** into the **Default endpoint** field.
-4. Set up **Account Linking** (in the left sidebar under *ACCOUNT LINKING*):
+4. Enable **Send Alexa Events** (in the left sidebar under *PERMISSIONS*):
+   - Toggle **Send Alexa Events** to **ON**.
+   - Note the **Alexa Client Id** and **Alexa Client Secret** displayed — add them to the Lambda environment variables as `ALEXA_CLIENT_ID` and `ALEXA_CLIENT_SECRET` (Step 3.2). These are what the handler uses to exchange tokens with the Alexa Event Gateway.
+5. Set up **Account Linking** (in the left sidebar under *ACCOUNT LINKING*):
    - **Do you allow users to create an account or link...**: Select **Yes**.
    - **Security / Authorization**:
      - **Grant Type**: `AUTH_CODE` (Auth Code Grant)
@@ -133,13 +165,13 @@ The Lambda function handles discovery directives from Alexa, returning your PC's
      - **Client ID**: Your Client ID from Step 2
      - **Client Secret**: Your Client Secret from Step 2
      - **Client Authentication Scheme**: `HTTP Basic (Recommended)`
-     - **Scope**: Click *+ Add scope* and add `profile`
-5. Copy the **Redirect URLs** listed at the bottom of the Account Linking page (e.g. `https://pitangui.amazon.com/api/modern/skill/link/...` and `https://layla.amazon.com/api/modern/skill/link/...`).
-6. Return to your **Login with Amazon Security Profile** in the developer console:
+     - **Scope**: Click *+ Add scope* and add `profile` (LWA requires at least one scope to complete the flow, even though the handler never calls Amazon's profile API — the `profile` scope exists only to satisfy OAuth).
+6. Copy the **Redirect URLs** listed at the bottom of the Account Linking page (e.g. `https://pitangui.amazon.com/api/modern/skill/link/...` and `https://layla.amazon.com/api/modern/skill/link/...`).
+7. Return to your **Login with Amazon Security Profile** in the developer console:
    - Go to **Web Settings** → **Edit**.
    - Paste the redirect URLs into **Allowed Return URLs**.
    - Save changes.
-7. Click **Save** in the Alexa Developer Console.
+8. Click **Save** in the Alexa Developer Console.
 
 ---
 
@@ -149,51 +181,122 @@ The Lambda function handles discovery directives from Alexa, returning your PC's
 2. Navigate to **More** → **Skills & Games** → **Your Skills** → **Dev**.
 3. Tap on your **Wake on LAN** skill and tap **Enable to Use**.
 4. You will be redirected to the Amazon Login page. Sign in to link your developer profile.
-5. Once linked, Alexa will prompt to discover devices:
+5. Enabling the skill triggers **AcceptGrant**: the handler exchanges the authorization code and stores the Event Gateway tokens in DynamoDB. TurnOn will not work until this has happened (re-enable the skill if it ever fails).
+6. Once linked, Alexa will prompt to discover devices:
    - Alternatively, say: *"Alexa, discover devices"*.
-6. Alexa should find your PC as a computer device named according to your `PC_FRIENDLY_NAME`.
-7. Test the voice command:
+7. Alexa should find your PC as a computer device named according to your `PC_FRIENDLY_NAME` (or the `friendlyName` entries in `WOL_DEVICES`).
+8. Test the voice command:
    > *"Alexa, turn on [PC Name]."*
 
 ---
 
 ## Testing
 
-### 1. In the AWS Lambda Console
-You can test each directive directly using the sample events in [`events/`](../events/):
+### Level 1 — Lambda Console (AWS, without Alexa)
 
-1. Go to your Lambda function → **Test** tab.
-2. Create test events for each file:
-   - **Discovery**: Paste contents of [`events/discover.json`](../events/discover.json).
-   - **Turn On**: Paste contents of [`events/turn-on.json`](../events/turn-on.json).
-   - **Report State**: Paste contents of [`events/report-state.json`](../events/report-state.json).
-3. Click **Test** and confirm the function returns status 200 / valid Alexa responses with no errors.
+1. Deploy the code to AWS Lambda (see Step 3).
+2. In the **Test** tab, create a test event and paste the corresponding JSON below, then click **Test**:
 
-### 2. Locally with Node.js
+   **Discovery** (`Alexa.Discovery` / `Discover`):
+   ```json
+   {
+     "directive": {
+       "header": {
+         "namespace": "Alexa.Discovery",
+         "name": "Discover",
+         "payloadVersion": "3",
+         "messageId": "test-message-id"
+       },
+       "payload": {
+         "scope": { "type": "BearerToken", "token": "test-token" }
+       }
+     }
+   }
+   ```
+   Expected: a `Discover.Response` with your endpoint(s), including the configured MAC address(es).
 
-Run the handler locally without any third-party dependencies (Node.js 20+ required):
+   **Report State** (`Alexa` / `ReportState`):
+   ```json
+   {
+     "directive": {
+       "header": {
+         "namespace": "Alexa",
+         "name": "ReportState",
+         "payloadVersion": "3",
+         "messageId": "test-message-id",
+         "correlationToken": "test-correlation-token"
+       },
+       "endpoint": {
+         "scope": { "type": "BearerToken", "token": "test-token" },
+         "endpointId": "wol-pc-001"
+       },
+       "payload": {}
+     }
+   }
+   ```
+   Expected: a `StateReport` with `powerState: OFF`.
 
-```bash
-MAC_ADDRESS=AA:BB:CC:DD:EE:FF node --input-type=module << 'EOF'
-import { readFileSync } from 'fs';
-import { handler } from './src/index.js';
+   **Turn On** (`Alexa.PowerController` / `TurnOn`):
+   ```json
+   {
+     "directive": {
+       "header": {
+         "namespace": "Alexa.PowerController",
+         "name": "TurnOn",
+         "payloadVersion": "3",
+         "messageId": "test-message-id",
+         "correlationToken": "test-correlation-token"
+       },
+       "endpoint": {
+         "scope": { "type": "BearerToken", "token": "test-token" },
+         "endpointId": "wol-pc-001"
+       },
+       "payload": {}
+     }
+   }
+   ```
+   Expected: an `Alexa.DeferredResponse` (estimated deferral 15s) — the handler invokes itself asynchronously to run the WakeUp workflow. The async step sends the `WakeUp` event to the Event Gateway and then the final `Alexa.Response` (`powerState: ON`); without account linking it will fail with "No stored Event Gateway token..." in CloudWatch Logs, which is expected until Step 5 has completed.
 
-const event = JSON.parse(readFileSync('./events/discover.json', 'utf8'));
-console.log(JSON.stringify(await handler(event), null, 2));
-EOF
-```
+### Level 2 — End-to-End Test with Alexa
+
+This validates the real hardware layer (Echo broadcast & PC motherboard wake):
+
+1. **Discovery**: Say *"Alexa, discover devices"* (or check the Alexa App). Ensure your PC appears with the expected friendly name.
+2. **Turn On**: Put your PC into a state ready for WoL (Shut down with power connected).
+3. Say:
+   > *"Alexa, turn on [PC Name]."*
+4. Verify:
+   - Alexa replies *"OK"*.
+   - PC physically boots up.
+5. If the PC does not wake, check CloudWatch Logs for the async invocation: it should show `WakeUp accepted by Event Gateway` and `Final Alexa Response accepted`.
+
+---
+
+## Troubleshooting
+
+| Symptom | What to Check |
+|---|---|
+| **Alexa cannot discover devices** | Check AWS CloudWatch Logs. Verify `Discover` directive was received and `WOL_DEVICES` or `MAC_ADDRESS` is correctly configured in Lambda environment variables. |
+| **Lambda fails with missing env vars** | `requireConfig()` requires `ALEXA_CLIENT_ID` and `ALEXA_CLIENT_SECRET` (from the skill's Send Alexa Events permission) on every invocation. `DYNAMODB_TABLE_NAME` and `ASYNC_LAMBDA_NAME` are also checked but have defaults, so they only fail if you explicitly clear them. |
+| **"No stored Event Gateway token..." in logs** | Account linking has not completed (or tokens were lost). Re-enable the skill in the Alexa App to trigger `AcceptGrant` again. |
+| **DynamoDB errors (ResourceNotFoundException / AccessDenied)** | The `AlexaEventTokens` table doesn't exist, or the Lambda role lacks `GetItem`/`PutItem` on it. |
+| **"WakeUp rejected by Event Gateway"** | Verify `ALEXA_CLIENT_ID`/`ALEXA_CLIENT_SECRET` match the skill's Send Alexa Events credentials and that the permission is enabled. Also confirm `ALEXA_EVENT_GATEWAY_URL` matches your skill region. |
+| **Alexa confirms "OK" but PC does not turn on** | Not a Lambda issue. Verify PC BIOS/UEFI has Wake-on-LAN / PCI-E power-on enabled, Ethernet cable is plugged in (Wi-Fi WoL not supported when off), and Echo device is on the same local subnet. |
+| **"Cannot reach skill" / Generic Error** | Check Lambda timeout settings (increase if needed) and verify the Lambda's resource-based policy allows `alexa-connectedhome.amazon.com` to invoke it. |
 
 ---
 
 ## Lambda Directives Overview
 
-The Lambda function responds to three key directive types:
+The Lambda function responds to these directive types:
 
 | Directive | Namespace & Name | Action / Response |
 |---|---|---|
-| **Discovery** | `Alexa.Discovery / Discover` | Returns endpoint with `Alexa.WakeOnLANController` (including configured MAC address) and `Alexa.PowerController`. |
-| **Power Control** | `Alexa.PowerController / TurnOn` (or `TurnOff`) | Returns success `Alexa.Response` with `powerState: ON`. Alexa simultaneously instructs the local Echo to broadcast the WoL packet on the LAN. |
-| **State Reporting** | `Alexa / ReportState` | Returns `powerState: ON` (optimistic state report so Alexa does not claim the device is unresponsive). |
+| **Discovery** | `Alexa.Discovery / Discover` | Returns endpoint(s) with `Alexa.WakeOnLANController` (including configured MAC address) and `Alexa.PowerController`. |
+| **Turn On** | `Alexa.PowerController / TurnOn` | Returns `Alexa.DeferredResponse` immediately, then asynchronously sends a `WakeUp` event to the Alexa Event Gateway and the final `Alexa.Response` with `powerState: ON`. Alexa simultaneously instructs the local Echo to broadcast the WoL packet on the LAN. |
+| **Turn Off** | `Alexa.PowerController / TurnOff` | Returns an `ErrorResponse` (`NOT_SUPPORTED_IN_CURRENT_MODE`) — Wake-on-LAN cannot turn a powered-off PC off. |
+| **State Reporting** | `Alexa / ReportState` | Returns `powerState: OFF` (a WoL endpoint is reported off when the PC isn't running). |
+| **Authorization** | `Alexa.Authorization / AcceptGrant` | Exchanges the authorization code for Event Gateway tokens and stores them in DynamoDB. |
 
 ---
 
@@ -201,4 +304,4 @@ The Lambda function responds to three key directive types:
 
 - **Environment Variables**: Always keep your hardware MAC address in Lambda environment variables rather than hardcoding it in source control.
 - **No Inbound Open Ports**: Because the local Echo device broadcasts the UDP magic packet internally, no router ports need to be opened and no dynamic DNS or inbound firewall exceptions are required.
-- **Single-Tenant / Private**: Because this skill is deployed in development mode to your personal developer account, only your authorized Alexa devices have access.
+- **Single-Tenant / Private**: Because this skill is deployed in development mode to your personal developer account, only your authorized Alexa devices have access. The DynamoDB token store uses a fixed key, so the skill is designed for a single linked account.
