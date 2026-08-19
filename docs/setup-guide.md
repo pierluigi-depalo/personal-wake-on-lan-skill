@@ -137,7 +137,18 @@ The handler persists the Event Gateway access/refresh tokens here after account 
    - **Action**: `lambda:InvokeFunction`
    - **Statement ID**: `alexa-smart-home-invoke`
    - Alternatively, add an **Alexa Smart Home** trigger in the function overview and link your Skill ID once created.
-6. Copy your Lambda function's **ARN** (displayed at the top right of the Lambda console).
+ 6. Copy your Lambda function's **ARN** (displayed at the top right of the Lambda console).
+
+### 3.3 (Optional) Keep the Lambda warm
+
+The handler in-memory caches the Event Gateway token and device list, so a "warm" container answers TurnOn with a single HTTPS call (no DynamoDB/LWA). To avoid cold starts and pre-refresh the token before you speak:
+
+1. In the [EventBridge Console](https://console.aws.amazon.com/events), create a **schedule** that invokes the Lambda every ~5 minutes.
+2. Use this **input** (fixed JSON):
+   ```json
+   { "warmup": true }
+   ```
+3. The handler short-circuits on `warmup`, refreshes the token if needed, and returns `{ "warmed": true }` — it is never routed as an Alexa directive.
 
 ---
 
