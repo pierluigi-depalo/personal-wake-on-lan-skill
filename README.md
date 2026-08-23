@@ -1,8 +1,9 @@
 # alexa-wake-on-lan
 
 > "Alexa, turn on [your PC]." — PC boots before you reach your desk.
+> "Alexa, turn off [your PC]." — PC shuts down when you leave it.
 
-A serverless Alexa Smart Home skill that wakes a home PC via Wake-on-LAN. No always-on server, no open router ports, no subscription.
+A serverless Alexa Smart Home skill that wakes a home PC via Wake-on-LAN and shuts it down via a small resident agent. No always-on server, no open router ports, no subscription — everything stays in the AWS Always-Free tier.
 
 ---
 
@@ -29,6 +30,34 @@ The skill uses Amazon's [`Alexa.WakeOnLANController`](https://developer.amazon.c
   PC wakes up ✓
 ```
 
+**Turn off** works differently — a powered-off PC can't receive commands, so a tiny polling script on the PC bridges the gap:
+
+```
+"Alexa, turn off [your PC]"
+        │
+        ▼
+  Alexa Cloud calls Lambda
+        │
+        ▼
+  Lambda writes a shutdown command to DynamoDB
+        │
+        ▼
+  wol-bridge (a public Function URL) exposes it
+        │
+        ▼
+  PowerShell/Bash script on the PC polls every 20s
+        │
+        ▼
+  Script reports OFF, runs `shutdown /s /t 10`
+        │
+        ▼
+  PC powers off ✓
+```
+
+The script also writes the PC's power state to DynamoDB every 20 seconds (so `ReportState` and `TurnOff` know whether the PC is on and reachable) and reports state changes through the bridge, so the app stays accurate even when you toggle the PC by hand. No Node.js, no AWS SDK, no IAM access keys on the PC.
+
+Everything stays free: the bridge runs on Lambda (1M requests/month, always free), and one PC polling every 20s uses ~13% of that. See the [Skill Setup Guide](docs/setup-guide.md) for the full build.
+
 ---
 
 ## Architecture Decisions
@@ -49,13 +78,15 @@ AVM Fritzbox routers expose a TR-064 SOAP API (`X_AVM-DE_WakeOnLANByMACAddress`)
 
 ## Lambda Overview
 
-Three directives are handled by [`src/index.js`](src/index.js):
+Three directive types are handled by [`src/index.js`](src/index.js):
 
-- **`Alexa.Discovery.Discover`** — returns the PC as an endpoint with `Alexa.WakeOnLANController` (MAC address) and `Alexa.PowerController` interfaces
-- **`Alexa.PowerController.TurnOn` / `TurnOff`** — returns a success response with `powerState: ON/OFF`; Alexa broadcasts the magic packet to the local Echo independently
-- **`Alexa.ReportState`** — returns `powerState: ON`
+- **`Alexa.Discovery.Discover`** — returns the PC as an endpoint with `Alexa.WakeOnLANController` (MAC address), `Alexa.PowerController` and `Alexa.EndpointHealth` interfaces
+- **`Alexa.PowerController.TurnOn` / `TurnOff`** — TurnOn returns a success response with `powerState: ON`; Alexa broadcasts the magic packet to the local Echo independently. TurnOff writes a shutdown command to DynamoDB that the PC's polling script consumes via the bridge, and returns `powerState: OFF`
+- **`Alexa.ReportState`** — returns the real `powerState` (ON/OFF) from the DynamoDB row written by the PC's polling script, plus connectivity
 
 No WoL library is needed in Lambda — the local Echo handles the network broadcast.
+
+The **[`scripts/`](scripts/)** directory contains the polling scripts (PowerShell / Bash) that run on the PC: they poll the bridge for shutdown commands, keep the device state in DynamoDB, and report changes back to Alexa via ChangeReport.
 
 ---
 

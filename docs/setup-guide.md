@@ -12,9 +12,10 @@ A complete, step-by-step guide to building, configuring, and deploying your own 
 4. [Step 3: AWS Resources (DynamoDB + Lambda)](#step-3-aws-resources-dynamodb--lambda)
 5. [Step 4: Alexa Smart Home Skill Setup](#step-4-alexa-smart-home-skill-setup)
 6. [Step 5: Account Linking & Discovery](#step-5-account-linking--discovery)
-7. [Testing](#testing)
-8. [Lambda Directives Overview](#lambda-directives-overview)
-9. [Security Considerations](#security-considerations)
+7. [Step 6: Bridge Lambda + PC Scripts (for "turn off")](#step-6-bridge-lambda--pc-scripts-for-turn-off)
+8. [Testing](#testing)
+9. [Lambda Directives Overview](#lambda-directives-overview)
+10. [Security Considerations](#security-considerations)
 
 ---
 
@@ -121,8 +122,9 @@ The handler persists the Event Gateway access/refresh tokens here after account 
      - `AWS_REGION`: AWS region used by the AWS SDK clients; defaults to `eu-west-1`
      - `DYNAMODB_TABLE_NAME`: defaults to `AlexaEventTokens`
      - `ALEXA_EVENT_GATEWAY_URL`: defaults to `https://api.eu.amazonalexa.com/v3/events`. North America: `https://api.amazonalexa.com/v3/events`; Far East: `https://api.fe.amazonalexa.com/v3/events`
-     - `ENDPOINT_ID`: defaults to `wol-pc-001` (single-device mode)
-     - `PC_FRIENDLY_NAME`: defaults to `PC`
+      - `ENDPOINT_ID`: defaults to `wol-pc-001` (single-device mode)
+      - `PC_FRIENDLY_NAME`: defaults to `PC`
+      - `DEVICE_STALE_MS`: heartbeat age that counts as offline; defaults to `660000` (11 min)
 3. **Deploy Handler Code**:
    - The handler imports `@aws-sdk/client-dynamodb`, which is bundled in the Node.js Lambda runtime — no dependencies to install, no zip required.
    - Copy the contents of [`src/index.js`](../src/index.js) into the Lambda inline code editor and click **Deploy**.
@@ -149,6 +151,9 @@ The handler in-memory caches the Event Gateway token and device list, so a "warm
    { "warmup": true }
    ```
 3. The handler short-circuits on `warmup`, refreshes the token if needed, and returns `{ "warmed": true }` — it is never routed as an Alexa directive.
+
+> [!TIP]
+> If you set up the [Step 6](#step-6-bridge-lambda--pc-scripts-for-turn-off) bridge, it sends the same `{ "type": "warmup" }` payload every 30 minutes on its own — you can delete this EventBridge schedule (EventBridge Scheduler is free only for the first 12 months).
 
 ---
 
@@ -198,6 +203,99 @@ The handler in-memory caches the Event Gateway token and device list, so a "warm
    > *"Alexa, turn on [PC Name]."*
 
 ---
+
+## Step 6: Bridge Lambda + PC Scripts (for "turn off")
+
+By default the skill only **turns on** — `TurnOff` needs something on the PC to
+receive the command, because a powered-off PC cannot receive a network command.
+The design:
+
+- a small **`wol-bridge` Lambda** with a public **Function URL** (HTTPS);
+- a **native script** on the PC (PowerShell or Bash — no Node.js, no AWS SDK,
+  no IAM keys) that polls the bridge every 20 seconds;
+- **DynamoDB command/state rows** in the existing `AlexaEventTokens` table.
+
+The bridge, the skill, and the polls all run inside the Lambda free tier
+(1M requests/month, **always free**). At 20s per poll, one PC makes ~130K
+requests/month ≈ **13%** of that; DynamoDB stays well inside the 25 RCU/25 WCU
+free tier. No SQS, no IAM users, no access keys on the PC.
+
+### 6.1 Create the bridge Lambda + Function URL
+
+1. [Lambda Console](https://console.aws.amazon.com/lambda) → **Create function**:
+   - **Function name**: `wol-bridge`
+   - **Runtime**: `Node.js 20.x` (or newer), **Architecture**: `arm64`
+2. **Environment variables**:
+   - `PC_SECRETS` (**required**): a JSON map of per-device shared secrets, e.g.
+     `{"wol-pc-001":"RANDOM_SECRET_1","office-pc":"RANDOM_SECRET_2"}`
+     (generate each secret with `openssl rand -hex 32`).
+   - `WOL_SKILL_FUNCTION` (optional): the skill Lambda's **name** (not ARN), used
+     for ChangeReports and warmup — e.g. `alexa-wake-on-lan`.
+   - `DYNAMODB_TABLE_NAME` (optional): defaults to `AlexaEventTokens`.
+3. **Deploy the code**: copy [`src/bridge.js`](../src/bridge.js) into the inline
+   editor and click **Deploy**. (Only `@aws-sdk` imports — bundled in the runtime.)
+4. **Grant permissions**: open the function's role in IAM and add an inline policy:
+   ```json
+   {
+     "Version": "2012-10-17",
+     "Statement": [
+       {
+         "Effect": "Allow",
+         "Action": ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:DeleteItem"],
+         "Resource": "arn:aws:dynamodb:REGION:ACCOUNT:table/AlexaEventTokens"
+       },
+       {
+         "Effect": "Allow",
+         "Action": "lambda:InvokeFunction",
+         "Resource": "arn:aws:lambda:REGION:ACCOUNT:function:alexa-wake-on-lan"
+       }
+     ]
+   }
+   ```
+5. **Enable the Function URL**: Configuration → **Function URL** → **Create**:
+   - **Auth type**: `NONE` — authorization is handled inside the Lambda via the
+     per-device secret header. (The URL is public; without the correct
+     `x-pc-secret` header every request returns 401.)
+   - Copy the URL, e.g. `https://abc123.lambda-url.eu-west-1.on.aws/`.
+
+> [!IMPORTANT]
+> The bridge is intentionally a **separate** Lambda. The skill Lambda itself stays
+> private (invoked only by Amazon/Alexa) — never give it a Function URL.
+
+### 6.2 Install the PC script
+
+See **[`scripts/README.md`](../scripts/README.md)** for the full install
+(Task Scheduler on Windows, systemd on Linux). Each device gets:
+- its own **secret** (matching its entry in `PC_SECRETS`),
+- the bridge **Function URL**,
+- its **deviceId** (must match the skill's `WOL_DEVICES` / `ENDPOINT_ID`).
+
+Every 20 seconds the script POSTs `{ "powerState": "ON" }` to
+`<url>?deviceId=<id>` with the `x-pc-secret` header. The bridge:
+- verifies the secret;
+- writes the heartbeat to the `wol-device/<deviceId>` state row (the same row the
+  skill's `ReportState` / `TurnOff` already read);
+- replies `{ "action": "shutdown" }` when a shutdown command is pending.
+
+On `shutdown`, the script reports `OFF`, then powers the PC down.
+
+### 6.3 Turn Off is now live
+
+> *"Alexa, turn off [PC Name]."*
+
+The skill Lambda checks the state row: if the heartbeat is fresh it writes a
+`cmd-<deviceId>` command row and replies `powerState: OFF`; the PC picks it up on
+its next poll (≤20s). If the heartbeat is stale (>11 min), the PC is offline and
+Alexa gets `ENDPOINT_UNREACHABLE` — the skill never writes a command that would
+re-fire on the next boot.
+
+### 6.4 Manual state changes
+
+- **Boot by hand**: the script reports `ON` on startup → the bridge fires a
+  ChangeReport → the app updates instantly.
+- **Power off by hand**: heartbeats stop → after ~11 min the skill reports
+  `OFF`/`UNREACHABLE`. There is no instant notification (a powered-off PC can't
+  call out) — the app catches up on the next `ReportState`.
 
 ## Testing
 
@@ -266,6 +364,36 @@ The handler in-memory caches the Event Gateway token and device list, so a "warm
    ```
    Expected: an `Alexa.Response` with `powerState: ON` — the handler runs the WakeUp workflow synchronously (sends the `WakeUp` event to the Event Gateway, then returns the success response). Without account linking it will fail with "No stored Event Gateway token..." in CloudWatch Logs, which is expected until Step 5 has completed.
 
+   **Turn Off** (`Alexa.PowerController` / `TurnOff`):
+   ```json
+   {
+     "directive": {
+       "header": {
+         "namespace": "Alexa.PowerController",
+         "name": "TurnOff",
+         "payloadVersion": "3",
+         "messageId": "test-message-id",
+         "correlationToken": "test-correlation-token"
+       },
+       "endpoint": {
+         "scope": { "type": "BearerToken", "token": "test-token" },
+         "endpointId": "wol-pc-001"
+       },
+       "payload": {}
+     }
+   }
+   ```
+   Expected:
+   - With a fresh row (`powerState: "ON"` from the PC script) → `Alexa.Response` with `powerState: OFF` and a `cmd-wol-pc-001` row written to DynamoDB.
+   - With a stale/missing row → `ErrorResponse` `ENDPOINT_UNREACHABLE` ("PC is offline (no recent heartbeat)") — no command row is written.
+   - With `powerState: "OFF"` → idempotent `Alexa.Response` with `powerState: OFF`.
+
+   **ChangeReport** (bridge → Lambda, not an Alexa directive):
+   ```json
+   { "type": "changeReport", "deviceId": "wol-pc-001", "state": "ON" }
+   ```
+   Expected: `{ "changeReported": true }` and an `Alexa.ChangeReport` delivered to the Event Gateway (visible in CloudWatch Logs).
+
 ### Level 2 — End-to-End Test with Alexa
 
 This validates the real hardware layer (Echo broadcast & PC motherboard wake):
@@ -278,6 +406,16 @@ This validates the real hardware layer (Echo broadcast & PC motherboard wake):
    - Alexa replies *"OK"*.
    - PC physically boots up.
 5. If the PC does not wake, check CloudWatch Logs for the invocation: it should show `WakeUp accepted by Event Gateway` before returning the response.
+
+**Turn Off (requires Step 6):**
+
+1. With the PC on and the polling script running, say:
+   > *"Alexa, turn off [PC Name]."*
+2. Verify:
+   - Alexa replies *"OK"*.
+   - The PC shuts down within ~30 seconds (20s poll + grace period).
+   - The Alexa app shows the PC as **Off** (via the bridge's ChangeReport).
+3. If Alexa reports the PC as unreachable, check that the script is running and the `heartbeatAt` row in DynamoDB is fresh (see Troubleshooting).
 
 ---
 
@@ -292,6 +430,11 @@ This validates the real hardware layer (Echo broadcast & PC motherboard wake):
 | **"WakeUp rejected by Event Gateway"** | Verify `ALEXA_CLIENT_ID`/`ALEXA_CLIENT_SECRET` match the skill's Send Alexa Events credentials and that the permission is enabled. Also confirm `ALEXA_EVENT_GATEWAY_URL` matches your skill region. |
 | **Alexa confirms "OK" but PC does not turn on** | Not a Lambda issue. Verify PC BIOS/UEFI has Wake-on-LAN / PCI-E power-on enabled, Ethernet cable is plugged in (Wi-Fi WoL not supported when off), and Echo device is on the same local subnet. |
 | **"Cannot reach skill" / Generic Error** | Check Lambda timeout settings (increase if needed) and verify the Lambda's resource-based policy allows `alexa-connectedhome.amazon.com` to invoke it. |
+| **TurnOff returns "PC is offline"** | The polling script isn't running, or `heartbeatAt` is stale. Check the script process, its arguments (`API_URL`, `Secret`, `DeviceId`), and the `wol-device/<deviceId>` row in DynamoDB. |
+| **TurnOff returns ENDPOINT_UNREACHABLE immediately** | The PC's heartbeat is stale — the script isn't polling. Check the bridge logs for recent `wol-device/<deviceId>` writes. |
+| **Alexa says OK but the PC stays on** | The command row wasn't consumed. Check the bridge logs — if the poll returned 401, the script's secret doesn't match `PC_SECRETS`; if the row exists but the PC didn't act, check the script's `shutdown` handling. |
+| **Bridge returns 401** | The `x-pc-secret` header doesn't match `PC_SECRETS[deviceId]`, or the script is sending the wrong `deviceId` in the query string. |
+| **Alexa app shows stale power state** | `WOL_SKILL_FUNCTION` is unset on the bridge (no ChangeReports), or the Event Gateway rejected the ChangeReport (check CloudWatch Logs for `Event Gateway rejected event`). If the PC was powered off by hand, the app catches up on the next `ReportState` (heartbeat stops, so the skill reports OFF after ~11 min). |
 
 ---
 
@@ -303,9 +446,10 @@ The Lambda function responds to these directive types:
 |---|---|---|
 | **Discovery** | `Alexa.Discovery / Discover` | Returns endpoint(s) with `Alexa.WakeOnLANController` (including configured MAC address) and `Alexa.PowerController`. |
 | **Turn On** | `Alexa.PowerController / TurnOn` | Sends a `WakeUp` event to the Alexa Event Gateway synchronously and returns `Alexa.Response` with `powerState: ON`. Alexa simultaneously instructs the local Echo to broadcast the WoL packet on the LAN. |
-| **Turn Off** | `Alexa.PowerController / TurnOff` | Returns an `ErrorResponse` (`NOT_SUPPORTED_IN_CURRENT_MODE`) — Wake-on-LAN cannot turn a powered-off PC off. |
-| **State Reporting** | `Alexa / ReportState` | Returns `powerState: OFF` (a WoL endpoint is reported off when the PC isn't running). |
+| **Turn Off** | `Alexa.PowerController / TurnOff` | Checks the state row; if the heartbeat is fresh, writes a `cmd-<deviceId>` command row (the PC's polling script consumes it within ~20s) and returns `Alexa.Response` with `powerState: OFF`. `ENDPOINT_UNREACHABLE` if the PC has no fresh heartbeat. Requires Step 6. |
+| **State Reporting** | `Alexa / ReportState` | Returns the real `powerState` from the DynamoDB row (ON when the PC script reports the PC on), falling back to `OFF` when the row is missing or the heartbeat is stale. Includes `Alexa.EndpointHealth` connectivity. |
 | **Authorization** | `Alexa.Authorization / AcceptGrant` | Exchanges the authorization code for Event Gateway tokens and stores them in DynamoDB. |
+| **ChangeReport** (bridge→Lambda) | — | Payload `{ "type": "changeReport", "deviceId", "state" }` — sends an `Alexa.ChangeReport` to the Event Gateway so the app reflects real state even when the PC is toggled by hand. |
 
 ---
 

@@ -11,10 +11,15 @@
 </head>
 <body>
   <h1>Privacy Policy</h1>
-  <p>This is a personal Alexa Smart Home skill that wakes a home PC via Wake-on-LAN.</p>
+  <p>This is a personal Alexa Smart Home skill that wakes and shuts down a home PC
+  via Wake-on-LAN.</p>
   <p>This skill does not collect, store, or share any personal data. The only information
   used is the Login with Amazon token required by Alexa for account linking, which is
   handled entirely by Amazon's infrastructure.</p>
+  <p>When the "turn off" feature is enabled, a small polling script runs on your PC
+  and stores the PC's power state (on/off) and any pending shutdown commands in
+  your own AWS account. This data is used only to answer your voice commands and
+  stays inside your account.</p>
   <p>No data is transmitted to any third-party service.</p>
 </body>
 </html>
