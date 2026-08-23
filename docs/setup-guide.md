@@ -287,7 +287,9 @@ The skill Lambda checks the state row: if the heartbeat is fresh it writes a
 `cmd-<deviceId>` command row and replies `powerState: OFF`; the PC picks it up on
 its next poll (≤20s). If the heartbeat is stale (>11 min), the PC is offline and
 Alexa gets `ENDPOINT_UNREACHABLE` — the skill never writes a command that would
-re-fire on the next boot.
+re-fire on the next boot. As a second line of defense, the bridge itself
+discards any command older than 90s instead of executing it, so even a command
+written in the seconds before the PC went offline is dropped at the next poll.
 
 ### 6.4 Manual state changes
 

@@ -15,9 +15,11 @@ POST https://<url>.lambda-url.<region>.on.aws/?deviceId=<id>
 ```
 
 The bridge verifies the secret, writes the heartbeat to DynamoDB, and replies
-`{ "action": "shutdown" }` when a shutdown command is pending. On `shutdown` the
-script reports `OFF` (which triggers an Alexa ChangeReport so the app updates
-instantly) and then powers the PC down.
+`{ "action": "shutdown" }` when a fresh shutdown command is pending. On
+`shutdown` the script reports `OFF` (which triggers an Alexa ChangeReport so the
+app updates instantly) and then powers the PC down. Commands older than 90s are
+discarded by the bridge instead of executed, so one written while the PC was
+going offline can never re-fire on next boot.
 
 ## Setup
 
@@ -81,5 +83,5 @@ sudo systemctl enable --now wol-agent
 - The bridge's Function URL auth is set to **NONE** — authorization is enforced
   in the Lambda code via the secret header. Do not reuse this pattern for
   anything holding sensitive data.
-- `shutdown /s /t N` on Windows waits `N` seconds; the Linux script uses
-  `shutdown -h +1` (1 minute).
+- `shutdown /s /t N` on Windows waits `N` seconds; the Linux script sleeps
+  `GRACE` seconds (default 10) and then runs `shutdown -h now`.
