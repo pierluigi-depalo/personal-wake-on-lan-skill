@@ -119,7 +119,7 @@ export const handler = async (event) => {
     // 3. Best-effort warmup (only on polls where the PC is on).
     if (lambda && now - lastWarmupAt >= WARMUP_INTERVAL_MS) {
       lastWarmupAt = now;
-      await invokeSkill({ type: "warmup" });
+      await invokeSkill({ warmup: true });
     }
 
     return ok({ action: "none" });
