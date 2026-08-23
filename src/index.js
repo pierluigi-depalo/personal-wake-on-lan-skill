@@ -14,6 +14,9 @@ const EVENT_GATEWAY_URL =
 const DB_KEY = "current_alexa_user";
 const TOKEN_MARGIN_MS = 5 * 60 * 1000;
 
+// --- Shutdown via bridge (DynamoDB command row, consumed by the PC's polling script) ---
+const DEVICE_STALE_MS = Number(process.env.DEVICE_STALE_MS || 11 * 60 * 1000);
+
 const dynamodb = new DynamoDBClient({ region: REGION });
 
 // ==========================================
@@ -187,6 +190,86 @@ async function sendGatewayEvent(body, accessToken) {
 }
 
 // ==========================================
+// DEVICE STATE (DynamoDB row wol-device/<deviceId>)
+// written by the resident agent; read by TurnOff / ReportState / ChangeReport
+// ==========================================
+const deviceRowKey = (deviceId) => `wol-device/${deviceId}`;
+
+function isFresh(row, now = Date.now()) {
+  return !!row?.heartbeatAt && now - Number(row.heartbeatAt) <= DEVICE_STALE_MS;
+}
+
+async function getDeviceState(deviceId) {
+  const result = await dynamodb.send(
+    new GetItemCommand({
+      TableName: TABLE_NAME,
+      Key: { id: { S: deviceRowKey(deviceId) } },
+    })
+  );
+  if (!result.Item) return null;
+  return {
+    powerState: result.Item.powerState?.S,
+    heartbeatAt: result.Item.heartbeatAt ? Number(result.Item.heartbeatAt.N) : null,
+    lastAck: result.Item.lastAck?.M
+      ? {
+          requestId: result.Item.lastAck.M.requestId?.S,
+          status: result.Item.lastAck.M.status?.S,
+          ackAt: result.Item.lastAck.M.ackAt ? Number(result.Item.lastAck.M.ackAt.N) : null,
+          reason: result.Item.lastAck.M.reason?.S,
+        }
+      : null,
+  };
+}
+
+// ==========================================
+// SHUTDOWN via bridge command row
+// ==========================================
+async function putCommand(deviceId) {
+  await dynamodb.send(
+    new PutItemCommand({
+      TableName: TABLE_NAME,
+      Item: {
+        id: { S: `cmd-${deviceId}` },
+        action: { S: "shutdown" },
+        requestId: { S: id() },
+        createdAt: { N: String(Date.now()) },
+      },
+    })
+  );
+}
+
+async function handleTurnOff(event) {
+  const endpointId = getEndpoint(event).endpointId;
+  const targetDevice = getDevices().find((d) => d.endpointId === endpointId);
+
+  if (!targetDevice) {
+    return errorResponse(event, "NO_SUCH_ENDPOINT", `Unknown endpointId: ${endpointId}`);
+  }
+
+  try {
+    const row = await getDeviceState(endpointId);
+
+    if (row?.powerState === "OFF") {
+      // Idempotent: already off (or shutting down), nothing to do.
+      return buildPowerResponse(event, "OFF");
+    }
+
+    if (!isFresh(row)) {
+      // No fresh heartbeat: the PC is off/unreachable — never write a command that
+      // would re-fire on next boot.
+      return errorResponse(event, "ENDPOINT_UNREACHABLE", "PC is offline (no recent heartbeat).");
+    }
+
+    // Write the command; the PC's polling script consumes it within ~20s.
+    await putCommand(endpointId);
+    return buildPowerResponse(event, "OFF");
+  } catch (error) {
+    console.error("TurnOff failed:", error);
+    return errorResponse(event, "ENDPOINT_UNREACHABLE", error?.message || "Shutdown command failed");
+  }
+}
+
+// ==========================================
 // handler AcceptGrant / Discovery / ReportState
 // (invariati nella logica)
 // ==========================================
@@ -265,8 +348,8 @@ function discoveryResponse() {
         version: "3",
         properties: {
           supported: [{ name: "powerState" }],
-          proactivelyReported: false,
-          retrievable: false,
+          proactivelyReported: true,
+          retrievable: true,
         },
       },
       {
@@ -275,8 +358,8 @@ function discoveryResponse() {
         version: "3",
         properties: {
           supported: [{ name: "connectivity" }],
-          proactivelyReported: false,
-          retrievable: false,
+          proactivelyReported: true,
+          retrievable: true,
         },
       },
       { type: "AlexaInterface", interface: "Alexa", version: "3" },
@@ -291,9 +374,12 @@ function discoveryResponse() {
   };
 }
 
-function stateReport(event) {
+async function stateReport(event) {
   const header = getHeader(event);
   const endpoint = getEndpoint(event);
+  const row = await getDeviceState(endpoint.endpointId);
+  const fresh = isFresh(row);
+  const powerState = fresh && row.powerState ? row.powerState : "OFF";
   return {
     event: {
       header: { namespace: "Alexa", name: "StateReport", messageId: id(), correlationToken: header.correlationToken, payloadVersion: "3" },
@@ -305,7 +391,14 @@ function stateReport(event) {
         {
           namespace: "Alexa.PowerController",
           name: "powerState",
-          value: "OFF",
+          value: powerState,
+          timeOfSample: new Date().toISOString(),
+          uncertaintyInMilliseconds: 0,
+        },
+        {
+          namespace: "Alexa.EndpointHealth",
+          name: "connectivity",
+          value: fresh ? { value: "OK" } : { value: "UNREACHABLE" },
           timeOfSample: new Date().toISOString(),
           uncertaintyInMilliseconds: 0,
         },
@@ -350,6 +443,11 @@ function buildWakeUpEvent(event, accessToken) {
 }
 
 function buildFinalResponse(event, accessToken) {
+  return buildPowerResponse(event, "ON", accessToken, 0);
+}
+
+// Generic Alexa.PowerController response: used by TurnOn, TurnOff and idempotent paths.
+function buildPowerResponse(event, powerState, accessToken, uncertaintyInMilliseconds = 0) {
   const header = getHeader(event);
   const endpoint = getEndpoint(event);
   return {
@@ -363,9 +461,9 @@ function buildFinalResponse(event, accessToken) {
         {
           namespace: "Alexa.PowerController",
           name: "powerState",
-          value: "ON",
+          value: powerState,
           timeOfSample: new Date().toISOString(),
-          uncertaintyInMilliseconds: 0,
+          uncertaintyInMilliseconds,
         },
       ],
     },
@@ -405,6 +503,76 @@ async function handleTurnOn(event) {
   }
 }
 
+function buildChangeReport(deviceId, accessToken, powerState, connectivity) {
+  const now = new Date().toISOString();
+  return {
+    event: {
+      header: { namespace: "Alexa", name: "ChangeReport", messageId: id(), payloadVersion: "3" },
+      endpoint: { scope: { type: "BearerToken", token: accessToken }, endpointId: deviceId },
+      payload: {
+        change: {
+          cause: { type: "PHYSICAL_INTERACTION" },
+          properties: [
+            {
+              namespace: "Alexa.PowerController",
+              name: "powerState",
+              value: powerState,
+              timeOfSample: now,
+              uncertaintyInMilliseconds: 0,
+            },
+          ],
+        },
+      },
+    },
+    context: {
+      properties: [
+        {
+          namespace: "Alexa.PowerController",
+          name: "powerState",
+          value: powerState,
+          timeOfSample: now,
+          uncertaintyInMilliseconds: 0,
+        },
+        {
+          namespace: "Alexa.EndpointHealth",
+          name: "connectivity",
+          value: { value: connectivity },
+          timeOfSample: now,
+          uncertaintyInMilliseconds: 0,
+        },
+      ],
+    },
+  };
+}
+
+// Called by the resident agent via lambda:Invoke on boot / before shutdown,
+// so Alexa's app reflects real state even when the PC is toggled by hand.
+async function handleChangeReport(event) {
+  const { deviceId, state } = event;
+  const targetDevice = getDevices().find((d) => d.endpointId === deviceId);
+  if (!targetDevice || !["ON", "OFF"].includes(state)) {
+    throw new Error(`Invalid changeReport payload: ${JSON.stringify({ deviceId, state })}`);
+  }
+
+  const row = await getDeviceState(deviceId);
+  const connectivity = isFresh(row) ? "OK" : "UNREACHABLE";
+  const accessToken = await getValidToken();
+
+  try {
+    await sendGatewayEvent(buildChangeReport(deviceId, accessToken, state, connectivity), accessToken);
+  } catch (e) {
+    // Retry once if the token was revoked/expired.
+    if (e.status === 401 || e.status === 403) {
+      tokenCache = null;
+      const freshToken = await getValidToken();
+      await sendGatewayEvent(buildChangeReport(deviceId, freshToken, state, connectivity), freshToken);
+    } else {
+      throw e;
+    }
+  }
+  return { changeReported: true };
+}
+
 export const handler = async (event) => {
   try {
     // Warm-up programmato (vedi EventBridge): tiene caldo il container
@@ -414,17 +582,17 @@ export const handler = async (event) => {
       return { warmed: true };
     }
 
+    if (event?.type === "changeReport") return await handleChangeReport(event);
+
     requireConfig();
     const header = getDirective(event).header || {};
     const { namespace, name } = header;
 
     if (namespace === "Alexa.Authorization" && name === "AcceptGrant") return await handleAcceptGrant(event);
     if (namespace === "Alexa.Discovery" && name === "Discover") return discoveryResponse();
-    if (namespace === "Alexa" && name === "ReportState") return stateReport(event);
+    if (namespace === "Alexa" && name === "ReportState") return await stateReport(event);
     if (namespace === "Alexa.PowerController" && name === "TurnOn") return await handleTurnOn(event);
-    if (namespace === "Alexa.PowerController" && name === "TurnOff") {
-      return errorResponse(event, "NOT_SUPPORTED_IN_CURRENT_MODE", "TurnOff not supported by WOL endpoint.");
-    }
+    if (namespace === "Alexa.PowerController" && name === "TurnOff") return await handleTurnOff(event);
 
     return errorResponse(event, "INVALID_DIRECTIVE", `Unsupported: ${namespace}/${name}`);
   } catch (error) {
