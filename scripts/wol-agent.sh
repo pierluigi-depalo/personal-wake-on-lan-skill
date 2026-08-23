@@ -25,7 +25,8 @@ while true; do
   if [ "$(poll "ON")" = "shutdown" ]; then
     # Tell Alexa we are turning off, then power down.
     poll "OFF" >/dev/null
-    shutdown -h +1
+    sleep "$GRACE"
+    shutdown -h now
     exit 0
   fi
   sleep 20

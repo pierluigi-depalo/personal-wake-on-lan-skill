@@ -25,6 +25,9 @@ const REGION = process.env.AWS_REGION || "eu-west-1";
 const TABLE_NAME = process.env.DYNAMODB_TABLE_NAME || "AlexaEventTokens";
 const SKILL_FUNCTION = process.env.WOL_SKILL_FUNCTION;
 const WARMUP_INTERVAL_MS = 30 * 60 * 1000;
+// A shutdown command older than this is discarded instead of executed, so a
+// command written while the PC was going offline can never re-fire on next boot.
+const CMD_MAX_AGE_MS = 90 * 1000;
 
 let pcSecrets;
 try {
@@ -104,11 +107,13 @@ export const handler = async (event) => {
       await invokeSkill({ type: "changeReport", deviceId, state: newState });
     }
 
-    // 2. Consume a pending shutdown command.
+    // 2. Consume a pending shutdown command (stale ones are discarded).
     const cmd = toPlain(await ddb.get(`cmd-${deviceId}`));
     if (cmd.action === "shutdown") {
       await ddb.del(`cmd-${deviceId}`);
-      return ok({ action: "shutdown" });
+      if (now - Number(cmd.createdAt) <= CMD_MAX_AGE_MS) {
+        return ok({ action: "shutdown" });
+      }
     }
 
     // 3. Best-effort warmup (only on polls where the PC is on).

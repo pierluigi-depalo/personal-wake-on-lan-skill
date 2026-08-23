@@ -248,10 +248,11 @@ async function handleTurnOff(event) {
 
   try {
     const row = await getDeviceState(endpointId);
+    const accessToken = await getValidToken(); // cache: ~0ms se valido
 
     if (row?.powerState === "OFF") {
       // Idempotent: already off (or shutting down), nothing to do.
-      return buildPowerResponse(event, "OFF");
+      return buildPowerResponse(event, "OFF", accessToken);
     }
 
     if (!isFresh(row)) {
@@ -262,7 +263,7 @@ async function handleTurnOff(event) {
 
     // Write the command; the PC's polling script consumes it within ~20s.
     await putCommand(endpointId);
-    return buildPowerResponse(event, "OFF");
+    return buildPowerResponse(event, "OFF", accessToken);
   } catch (error) {
     console.error("TurnOff failed:", error);
     return errorResponse(event, "ENDPOINT_UNREACHABLE", error?.message || "Shutdown command failed");
