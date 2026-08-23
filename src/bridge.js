@@ -86,6 +86,10 @@ export const handler = async (event) => {
   const secret = event.headers?.["x-pc-secret"];
 
   if (!deviceId || !secret || pcSecrets[deviceId] !== secret) {
+    // Log enough to debug mismatches without ever logging secrets.
+    console.error(
+      `Unauthorized poll: deviceId=${deviceId || "(none)"} knownDeviceId=${Boolean(pcSecrets[deviceId])} headerPresent=${Boolean(secret)}`
+    );
     return err(401, "Unauthorized");
   }
 
