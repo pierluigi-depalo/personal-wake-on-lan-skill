@@ -95,7 +95,11 @@ export const handler = async (event) => {
 
   let body = {};
   try {
-    body = event.body ? JSON.parse(event.body) : {};
+    // Function URLs base64-encode some content types (e.g. form-urlencoded).
+    const raw = event.isBase64Encoded
+      ? Buffer.from(event.body, "base64").toString("utf8")
+      : event.body;
+    body = raw ? JSON.parse(raw) : {};
   } catch {
     return err(400, "Invalid JSON body");
   }

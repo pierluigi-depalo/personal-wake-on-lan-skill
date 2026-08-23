@@ -15,6 +15,7 @@ log() { echo "$(date -Is) $*" >&2; } # lands in journalctl under systemd
 poll() {
   local state="$1" rc=0 resp
   resp=$(curl -sS --max-time 15 -X POST \
+    -H "Content-Type: application/json" \
     -H "x-pc-secret: ${SECRET}" \
     -d "{\"powerState\":\"${state}\"}" \
     "${API_URL}?deviceId=${DEVICE_ID}") || rc=$?
