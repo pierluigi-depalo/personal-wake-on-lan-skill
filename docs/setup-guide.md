@@ -2,6 +2,8 @@
 
 A complete, step-by-step guide to building, configuring, and deploying your own serverless Alexa Smart Home Wake-on-LAN (WoL) skill.
 
+> Already deployed the turn-on-only version? See [migration-shutdown.md](migration-shutdown.md) for the delta to get "turn off".
+
 ---
 
 ## Table of Contents
