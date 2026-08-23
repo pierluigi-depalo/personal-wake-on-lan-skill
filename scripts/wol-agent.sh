@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # wol-agent.sh — polls the wol-bridge Lambda for shutdown commands and keeps the
-# device state fresh. No Node.js, no AWS SDK, no IAM keys — just curl + jq.
+# device state fresh. No Node.js, no AWS SDK, no IAM keys, no jq — just bash + curl.
 #
 # Env: DEVICE_ID, API_URL, SECRET, GRACE (optional, default 10)
 set -u
@@ -24,10 +24,12 @@ poll() {
     echo "none"
     return 0
   fi
-  printf '%s' "$resp" | jq -r .action 2>/dev/null || {
-    log "poll returned non-JSON: ${resp}"
-    echo "none"
-  }
+  # Match the action field without jq (not installed everywhere).
+  case "$resp" in
+    *'"action"'*':'*'"shutdown"'*) echo "shutdown" ;;
+    *'"action"'*:*) echo "none" ;;
+    *) log "poll returned unexpected body: ${resp}"; echo "none" ;;
+  esac
 }
 
 case "$API_URL" in *\<*) log "WARNING: API_URL still contains a placeholder";; esac

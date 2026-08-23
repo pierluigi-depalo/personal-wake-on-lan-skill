@@ -2,7 +2,7 @@
 
 Two scripts poll the **wol-bridge** Lambda (a Function URL) for shutdown commands
 and keep the device state in DynamoDB. No Node.js, no AWS SDK, no IAM access keys
-— just built-in OS tools (PowerShell 5.1 on Windows, curl + jq on Linux).
+— just built-in OS tools (PowerShell 5.1 on Windows, bash + curl on Linux).
 
 ## How it works
 
