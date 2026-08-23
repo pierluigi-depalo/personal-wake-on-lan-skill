@@ -10,13 +10,26 @@ API_URL="${API_URL:-https://<url>.lambda-url.<region>.on.aws/}"
 SECRET="${SECRET:-REPLACE_ME}"
 GRACE="${GRACE:-10}"
 
+log() { echo "$(date -Is) $*" >&2; } # lands in journalctl under systemd
+
 poll() {
-  local state="$1"
-  curl -sf --max-time 15 -X POST \
+  local state="$1" rc=0 resp
+  resp=$(curl -sS --max-time 15 -X POST \
     -H "x-pc-secret: ${SECRET}" \
     -d "{\"powerState\":\"${state}\"}" \
-    "${API_URL}?deviceId=${DEVICE_ID}" | jq -r .action 2>/dev/null || echo "none"
+    "${API_URL}?deviceId=${DEVICE_ID}") || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    log "poll failed: curl exit ${rc} (${state})"
+    echo "none"
+    return 0
+  fi
+  printf '%s' "$resp" | jq -r .action 2>/dev/null || {
+    log "poll returned non-JSON: ${resp}"
+    echo "none"
+  }
 }
+
+case "$API_URL" in *\<*) log "WARNING: API_URL still contains a placeholder";; esac
 
 # Boot: report ON so Alexa learns the PC is up even if it was started by hand.
 poll "ON" >/dev/null
