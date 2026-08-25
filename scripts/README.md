@@ -23,6 +23,33 @@ going offline can never re-fire on next boot.
 
 ## Setup
 
+**Automated (recommended):** open the **web installer** (`docs/installer/index.html` via GitHub
+Pages) — it collects devices/secrets, deploys the AWS side with CloudFormation and prints a
+ready-to-paste one-liner that runs `install-agent.ps1` / `install-agent.sh` on the target PC.
+
+From a repo checkout the local installers work standalone:
+
+```powershell
+# Windows (elevated) — installs agent + registers the scheduled task
+.\scripts\install-agent.ps1 -Install -DeviceId wol-pc-001 `
+    -ApiUrl "https://<url>.lambda-url.<region>.on.aws/" -Secret "REPLACE_ME"
+.\scripts\install-agent.ps1 -Status -Live      # inspect
+.\scripts\install-agent.ps1 -Uninstall -Purge  # remove
+```
+
+```bash
+# Linux (root) — interactive TUI or env-driven non-interactive
+sudo ./scripts/install-agent.sh                       # wizard
+sudo DEVICE_ID=wol-pc-001 API_URL="https://<url>.../" SECRET=REPLACE_ME \
+     ./scripts/install-agent.sh install               # unattended
+sudo ./scripts/install-agent.sh status --live
+```
+
+Both also run WoL pre-flight checks (Fast Startup / magic-packet capability on Windows,
+`ethtool` Wake-on caps on Linux), test bridge connectivity, and support `repair`.
+
+Manual steps below remain valid if you prefer doing it by hand.
+
 1. Create the `wol-bridge` Lambda + Function URL (see `docs/setup-guide.md` Step 6).
 2. Copy the Function URL and your device's secret into the script.
 3. Install the script to run at boot (below).

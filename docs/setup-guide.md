@@ -4,6 +4,8 @@ A complete, step-by-step guide to building, configuring, and deploying your own 
 
 > Already deployed the turn-on-only version? See [migration-shutdown.md](migration-shutdown.md) for the delta to get "turn off".
 
+> **Automated alternative:** the web installer (`installer/index.html`, served via GitHub Pages) walks through devices/secrets, deploys Steps 3 + 6 with a single CloudFormation command (`scripts/deploy-aws.ps1` / `.sh`), installs the PC agent for you (`scripts/install-agent.ps1` / `.sh`) and shows live online status. The manual steps below remain the reference.
+
 ---
 
 ## Table of Contents

@@ -94,6 +94,8 @@ The **[`scripts/`](scripts/)** directory contains the polling scripts (PowerShel
 
 For full step-by-step instructions on configuring your PC, setting up Login with Amazon (LWA), deploying the AWS Lambda function, and configuring the Alexa Developer Console, see the **[Skill Setup Guide](docs/setup-guide.md)**.
 
+Prefer a wizard? The **[web installer](docs/installer/index.html)** (GitHub Pages) generates your device config, deploys the AWS resources via CloudFormation and installs the PC agent — including a live online-status check of the bridge.
+
 ---
 
 ## Acknowledgments
