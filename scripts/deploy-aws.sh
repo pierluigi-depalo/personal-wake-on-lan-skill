@@ -9,6 +9,18 @@
 #     --client-secret yyyy \
 #     --devices '[{"endpointId":"wol-pc-001","friendlyName":"Office PC","macAddress":"AA:BB:CC:DD:EE:FF"}]' \
 #     --secrets '{"wol-pc-001":"long-random-secret"}'
+#
+# Incremental mode - add one or more devices to an EXISTING deployment
+# (updates WOL_DEVICES + PC_SECRETS in place, no stack changes). Repeatable,
+# each entry in one of these forms:
+#   'endpointId|FriendlyName|MAC'  full control
+#   'endpointId|MAC'               friendly name defaults to endpointId
+#   'endpointId|FriendlyName'      MAC auto-detected from this machine
+#   'endpointId'                   both defaults applied
+# Auto-detection picks this machine's wired interface - run ON the target PC,
+# or pass the MAC explicitly for remote adds:
+#   ./deploy-aws.sh --add-device 'gaming-rig|Gaming Rig' \
+#                   --add-device 'laptop|AA:BB:CC:DD:EE:FF'
 set -euo pipefail
 
 STACK_NAME="wol-stack"
@@ -27,8 +39,15 @@ PAGES_ORIGIN="https://pierluigi-depalo.github.io"
 CREATE_NEW_TABLE="true"
 RAW_BASE="https://raw.githubusercontent.com/pierluigi-depalo/personal-wake-on-lan-skill/main"
 SKIP_CODE_UPLOAD=0
+FORCE=0
+ADD_DEVICES=()
 
 usage() { sed -n '2,20p' "$0" >&2; exit 2; }
+
+step() { printf '==> %s\n' "$*"; }
+ok()   { printf '  OK  %s\n' "$*"; }
+warn() { printf '    !!  %s\n' "$*" >&2; }
+die()  { printf '  XX  %s\n' "$*" >&2; exit 1; }
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -48,18 +67,204 @@ while [ $# -gt 0 ]; do
     --no-new-table)      CREATE_NEW_TABLE="false"; shift ;;
     --raw-base)          RAW_BASE="$2"; shift 2 ;;
     --skip-code-upload)  SKIP_CODE_UPLOAD=1; shift ;;
+    -f|--force)          FORCE=1; shift ;;
+    --add-device)        ADD_DEVICES+=("$2"); shift 2 ;;
     -h|--help)           usage ;;
     *) echo "unknown option: $1" >&2; usage ;;
   esac
 done
 
+# ---------------------------------------------------------------------------
+# Incremental add-device mode (multi-device): updates env vars in place.
+# ---------------------------------------------------------------------------
+if [ "${#ADD_DEVICES[@]}" -gt 0 ]; then
+  TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
+  DEVS_FILE="$TMP/devices.tsv"   # endpointId<TAB>friendlyName<TAB>mac<TAB>secret
+  : > "$DEVS_FILE"
+
+  detect_local_mac() {
+    local iface mac
+    iface=$(ip -o -4 route show default 2>/dev/null | awk '{print $5; exit}')
+    if [ -z "$iface" ] && [ -d /sys/class/net ]; then
+      iface=$(ls /sys/class/net | grep -v '^lo$' | head -1)
+    fi
+    [ -n "$iface" ] || die "cannot detect a network interface on this machine - pass the MAC explicitly"
+    mac=$(cat "/sys/class/net/$iface/address" 2>/dev/null || true)
+    [ -n "$mac" ] && [ "$mac" != "00:00:00:00:00:00" ] ||
+      die "no MAC found for '$iface' - pass the MAC explicitly"
+    warn "auto-detected MAC $mac from '$iface'"
+    printf '%s' "$mac" | tr 'abcdef' 'ABCDEF'
+  }
+
+  is_mac() { printf '%s' "$1" | grep -Eq '^[0-9a-fA-F]{2}([-:]?[0-9a-fA-F]{2}){5}$'; }
+
+  for entry in "${ADD_DEVICES[@]}"; do
+    IFS='|' read -r e_id e_name e_mac <<< "$entry"
+    e_id=$(printf '%s' "$e_id" | tr -d '[:space:]')
+    printf '%s' "$e_id" | grep -Eq '^[a-z0-9][a-z0-9-]{1,62}$' ||
+      die "endpoint id '$e_id' must be a short slug (letters/digits/dashes)"
+    # Forms: 'id' | 'id|name' | 'id|MAC' | 'id|name|MAC' (MAC may be 'auto').
+    if [ -z "$e_name" ] && [ -z "${e_mac:-}" ]; then
+      e_mac="auto"                                          # 'id'
+    elif [ -z "${e_mac:-}" ]; then                          # 'id|name' | 'id|MAC'
+      if is_mac "$e_name"; then
+        e_mac="$e_name"; e_name=""
+      elif [ "$e_name" = "auto" ]; then
+        e_name=""; e_mac="auto"
+      else
+        e_mac="auto"
+      fi
+    fi
+    if [ "$e_mac" = "auto" ]; then
+      # detect_local_mac may die() - the subshell cannot abort us, so re-check.
+      e_mac=$(detect_local_mac)
+      [ -n "$e_mac" ] || exit 1
+    else
+      mac_norm=$(printf '%s' "$e_mac" | tr -d ':.-' | tr 'abcdef' 'ABCDEF')
+      printf '%s' "$mac_norm" | grep -Eq '^[0-9A-F]{12}$' ||
+        die "MAC '$e_mac' in '$entry' does not look like AA:BB:CC:DD:EE:FF"
+      e_mac=$(printf '%s' "$mac_norm" | sed 's/../&:/g; s/:$//')
+    fi
+    [ -n "$e_name" ] || e_name="$e_id"
+    secret=$(openssl rand -hex 32 2>/dev/null || head -c32 /dev/urandom | od -An -tx1 | tr -d ' \n')
+    printf '%s\t%s\t%s\t%s\n' "$e_id" "$e_name" "$e_mac" "$secret" >> "$DEVS_FILE"
+  done
+  if [ "$(cut -f1 "$DEVS_FILE" | sort | uniq -d | wc -l)" -gt 0 ]; then
+    die "duplicate endpoint ids in --add-device list"
+  fi
+
+  command -v aws >/dev/null 2>&1 || die "AWS CLI v2 not found"
+  command -v python3 >/dev/null 2>&1 || die "python3 required for JSON handling"
+  aws sts get-caller-identity --output text --query Account >/dev/null ||
+    die "AWS credentials not usable"
+
+  SKILL_FN="alexa-wake-on-lan"; BRIDGE_FN="wol-bridge"; BRIDGE_URL=""
+  if OUTS=$(aws cloudformation describe-stacks --stack-name "$STACK_NAME" \
+              --region "$REGION" --output json 2>/dev/null); then
+    get_out() {
+      printf '%s' "$OUTS" | python3 -c '
+import json,sys
+for o in json.load(sys.stdin)["Stacks"][0]["Outputs"]:
+    if o["OutputKey"]==sys.argv[1]: print(o["OutputValue"]); break
+' "$1"
+    }
+    SKILL_FN="$(get_out SkillFunctionName)"
+    BRIDGE_FN="$(get_out BridgeFunctionName)"
+    BRIDGE_URL="$(get_out BridgeFunctionUrl)"
+  fi
+  if [ -z "$BRIDGE_URL" ]; then
+    BRIDGE_URL=$(aws lambda get-function-url-config --function-name "$BRIDGE_FN" \
+                   --region "$REGION" --output text --query FunctionUrl 2>/dev/null || true)
+  fi
+
+  wait_settled() {
+    for _ in $(seq 1 30); do
+      sleep 1
+      s=$(aws lambda get-function-configuration --function-name "$1" --region "$REGION" \
+            --output text --query LastUpdateStatus)
+      [ "$s" = "Successful" ] && return 0
+      [ "$s" = "Failed" ] && return 1
+    done
+    return 1
+  }
+
+  merge_skill() { # merge_skill <config.json> -> writes skill-env.json, prints count
+    python3 - "$1" "$DEVS_FILE" "$TMP/skill-env.json" <<'PY'
+import json, sys
+infile, devsfile, outfile = sys.argv[1:]
+rows = [l.rstrip("\n").split("\t") for l in open(devsfile) if l.strip()]
+cfg = json.load(open(infile))
+env = (cfg.get("Environment") or {}).get("Variables") or {}
+if cfg.get("LastUpdateStatus") == "InProgress":
+    sys.exit("function is mid-update - retry in a moment")
+devices = []
+if env.get("WOL_DEVICES"):
+    devices = json.loads(env["WOL_DEVICES"])
+    if not isinstance(devices, list): devices = [devices]
+elif env.get("MAC_ADDRESS"):
+    print("!! single-device mode - migrating to WOL_DEVICES", file=sys.stderr)
+    devices = [{"endpointId": env.get("ENDPOINT_ID", "wol-pc-001"),
+                "friendlyName": env.get("PC_FRIENDLY_NAME", "PC"),
+                "macAddress": env["MAC_ADDRESS"]}]
+    for k in ("MAC_ADDRESS", "ENDPOINT_ID", "PC_FRIENDLY_NAME"):
+        env.pop(k, None)
+for _id, _name, _mac, _sec in rows:
+    if any(d.get("endpointId") == _id for d in devices):
+        sys.exit(f"device '{_id}' already exists")
+    devices.append({"endpointId": _id, "friendlyName": _name, "macAddress": _mac})
+env["WOL_DEVICES"] = json.dumps(devices, separators=(",", ":"))
+with open(outfile, "w") as f:
+    json.dump({"Variables": env}, f)
+print(len(devices))
+PY
+  }
+
+  merge_bridge() { # merge_bridge <config.json> -> writes bridge-env.json, prints count
+    python3 - "$1" "$DEVS_FILE" "$TMP/bridge-env.json" <<'PY'
+import json, sys
+infile, devsfile, outfile = sys.argv[1:]
+rows = [l.rstrip("\n").split("\t") for l in open(devsfile) if l.strip()]
+cfg = json.load(open(infile))
+env = (cfg.get("Environment") or {}).get("Variables") or {}
+if cfg.get("LastUpdateStatus") == "InProgress":
+    sys.exit("function is mid-update - retry in a moment")
+secrets = {}
+if env.get("PC_SECRETS"):
+    secrets = json.loads(env["PC_SECRETS"])
+for _id, _name, _mac, _sec in rows:
+    secrets[_id] = _sec
+env["PC_SECRETS"] = json.dumps(secrets, separators=(",", ":"))
+with open(outfile, "w") as f:
+    json.dump({"Variables": env}, f)
+print(len(secrets))
+PY
+  }
+
+  step "updating skill Lambda '$SKILL_FN'"
+  aws lambda get-function-configuration --function-name "$SKILL_FN" \
+        --region "$REGION" --output json > "$TMP/skill-cfg.json"
+  merge_skill "$TMP/skill-cfg.json" > "$TMP/count" ||
+    die "skill env merge failed (see message above)"
+  aws lambda update-function-configuration --function-name "$SKILL_FN" \
+        --region "$REGION" --environment "file://$TMP/skill-env.json" >/dev/null
+  wait_settled "$SKILL_FN" || die "'$SKILL_FN' update did not settle successfully"
+  ok "WOL_DEVICES now lists $(cat "$TMP/count") device(s)"
+
+  step "updating bridge Lambda '$BRIDGE_FN'"
+  aws lambda get-function-configuration --function-name "$BRIDGE_FN" \
+        --region "$REGION" --output json > "$TMP/bridge-cfg.json"
+  merge_bridge "$TMP/bridge-cfg.json" > "$TMP/count" ||
+    die "bridge env merge failed (see message above)"
+  aws lambda update-function-configuration --function-name "$BRIDGE_FN" \
+        --region "$REGION" --environment "file://$TMP/bridge-env.json" >/dev/null
+  wait_settled "$BRIDGE_FN" || die "'$BRIDGE_FN' update did not settle successfully"
+  ok "PC_SECRETS now holds $(cat "$TMP/count") secret(s)"
+
+  if [ -z "$BRIDGE_URL" ]; then
+    warn "could not read the bridge Function URL - substitute <BRIDGE_URL> below"
+    BRIDGE_URL="<BRIDGE_URL>"
+  fi
+
+  printf '\n================ DEVICES ADDED ================\n'
+  while IFS=$'\t' read -r d_id d_name d_mac d_secret; do
+    echo ""
+    echo "endpointId : $d_id"
+    echo "secret     : $d_secret"
+    echo "# Windows (elevated PowerShell):"
+    echo "iwr $RAW_BASE/scripts/install-agent.ps1 -OutFile \$env:TEMP\\wol-install.ps1; powershell -NoProfile -ExecutionPolicy Bypass -File \"\$env:TEMP\\wol-install.ps1\" -Install -DeviceId '$d_id' -ApiUrl '$BRIDGE_URL' -Secret '$d_secret'"
+    echo "# Linux:"
+    echo "curl -fsSL $RAW_BASE/scripts/install-agent.sh | sudo env DEVICE_ID='$d_id' API_URL='$BRIDGE_URL' SECRET='$d_secret' bash -s -- install"
+  done < "$DEVS_FILE"
+  echo ""
+  warn "If you later re-run a full CloudFormation deploy, pass the FULL device list"
+  warn "(use --add-device for future additions instead of stack updates)."
+  printf '===============================================\n'
+  exit 0
+fi
+
 [ -n "$ALEXA_CLIENT_ID" ]     || { echo "--client-id required" >&2; exit 1; }
 [ -n "$ALEXA_CLIENT_SECRET" ] || { echo "--client-secret required" >&2; exit 1; }
 [ -n "$PC_SECRETS_JSON" ]     || { echo "--secrets required" >&2; exit 1; }
-
-step() { printf '==> %s\n' "$*"; }
-ok()   { printf '  OK  %s\n' "$*"; }
-die()  { printf '  XX  %s\n' "$*" >&2; exit 1; }
 
 case "$REGION" in
   us-east-1|us-west-2|eu-west-1|ap-northeast-1) ;;
@@ -105,6 +310,22 @@ step "checking AWS credentials"
 aws sts get-caller-identity --output text --query Account >/dev/null ||
   die "AWS credentials not usable - run 'aws configure'"
 ok "credentials OK"
+
+# Pre-flight: leftovers from a previous/manual deployment make CREATE fail.
+step "checking for conflicting resources"
+if [ "$CREATE_NEW_TABLE" = "true" ]; then
+  if aws dynamodb describe-table --table-name "$TABLE_NAME" --region "$REGION" >/dev/null 2>&1; then
+    msg="table '$TABLE_NAME' already exists - run scripts/remove-aws.sh --delete-table first, or redeploy with --no-new-table"
+    [ "$FORCE" = "1" ] && warn "$msg" || die "$msg"
+  fi
+fi
+for fn in alexa-wake-on-lan wol-bridge; do
+  if aws lambda get-function --function-name "$fn" --region "$REGION" >/dev/null 2>&1; then
+    msg="Lambda '$fn' already exists (outside the stack?) - run scripts/remove-aws.sh first, or retry with --force"
+    [ "$FORCE" = "1" ] && warn "$msg" || die "$msg"
+  fi
+done
+ok "no conflicts"
 
 make_zip() { # make_zip <handler-src> <zip-out>
   local stage="$TMP/stage.$$"
