@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>wol-agent installer — Alexa Wake-on-LAN</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <h1>Wake-on-LAN skill installer</h1>
+  <p class="sub">Guided setup: devices &amp; secrets &rarr; AWS (CloudFormation) &rarr; PC agent &rarr; online status.</p>
+  <nav id="steps-nav">
+    <a href="#prereqs" class="step-link" data-step="prereqs">1 · Prerequisites</a>
+    <a href="#devices" class="step-link" data-step="devices">2 · Devices</a>
+    <a href="#aws" class="step-link" data-step="aws">3 · AWS</a>
+    <a href="#agent" class="step-link" data-step="agent">4 · PC agent</a>
+    <a href="#status" class="step-link" data-step="status">5 · Status</a>
+  </nav>
+</header>
+
+<main>
+
+<!-- ================= STEP 1: PREREQS ================= -->
+<section id="prereqs" class="step">
+  <h2>1 · Prerequisites</h2>
+  <ul class="checklist">
+    <li><input type="checkbox" id="pre-aws"><label for="pre-aws">AWS account with CLI credentials configured (<code>aws configure</code>) — <a href="https://console.aws.amazon.com/" target="_blank" rel="noopener">console</a></label></li>
+    <li><input type="checkbox" id="pre-dev"><label for="pre-dev">Amazon Developer account — <a href="https://developer.amazon.com/" target="_blank" rel="noopener">developer.amazon.com</a></label></li>
+    <li><input type="checkbox" id="pre-echo"><label for="pre-echo">Echo device on the same LAN as your PC</label></li>
+    <li><input type="checkbox" id="pre-lan"><label for="pre-lan">PC connected via <strong>wired Ethernet</strong>, BIOS/UEFI Wake-on-LAN enabled</label></li>
+  </ul>
+
+  <h3>Alexa-side configuration (manual, cannot be automated)</h3>
+  <p>The wizard generates all AWS resources and the PC agent, but these two Alexa-console artifacts must be created by hand:</p>
+  <ol>
+    <li><strong>Login with Amazon security profile</strong> — required for account linking (<a href="https://developer.amazon.com/lwa/sp/overview.html" target="_blank" rel="noopener">create here</a>; details in <a href="../setup-guide.md">setup guide Step 2</a>).</li>
+    <li><strong>Create a Smart Home skill</strong> ("Provision your own") and enable its <strong>Send Alexa Events</strong> permission — the <em>Alexa Client Id / Client Secret</em> shown there go into Step&nbsp;3 of this wizard. <a href="https://developer.amazon.com/alexa/console/ask" target="_blank" rel="noopener">Alexa Developer Console</a></li>
+  </ol>
+  <p class="note">Full background: <a href="../setup-guide.md">docs/setup-guide.md</a>. The wizard replaces its Steps 1, 3 and 6.</p>
+  <div class="nav"><a class="btn primary" href="#devices">Continue →</a></div>
+</section>
+
+<!-- ================= STEP 2: DEVICES ================= -->
+<section id="devices" class="step" hidden>
+  <h2>2 · Devices &amp; secrets</h2>
+  <p>Add every PC you want to wake/shut down. Each gets a random shared secret used between the PC agent and your bridge.</p>
+
+  <div class="row">
+    <label>AWS region (Alexa-supported)
+      <select id="region">
+        <option value="eu-west-1">eu-west-1 (Europe)</option>
+        <option value="us-east-1">us-east-1 (N. America)</option>
+        <option value="us-west-2">us-west-2 (N. America)</option>
+        <option value="ap-northeast-1">ap-northeast-1 (Far East)</option>
+      </select>
+    </label>
+  </div>
+
+  <div id="device-list"></div>
+  <button class="btn" id="add-device">+ Add device</button>
+
+  <div class="generated">
+    <h3>Generated artifacts</h3>
+    <div class="artifact">
+      <header><code>WOL_DEVICES</code> <span class="hint">→ skill Lambda env var</span><button class="copy" data-copy="out-wol-devices">Copy</button></header>
+      <pre id="out-wol-devices"></pre>
+    </div>
+    <div class="artifact">
+      <header><code>PC_SECRETS</code> <span class="hint">→ bridge Lambda env var</span><button class="copy" data-copy="out-pc-secrets">Copy</button></header>
+      <pre id="out-pc-secrets"></pre>
+    </div>
+  </div>
+
+  <p class="warn" id="devices-validation"></p>
+  <div class="nav">
+    <a class="btn" href="#prereqs">← Back</a>
+    <a class="btn primary" href="#aws">Continue →</a>
+  </div>
+</section>
+
+<!-- ================= STEP 3: AWS ================= -->
+<section id="aws" class="step" hidden>
+  <h2>3 · Deploy AWS resources</h2>
+
+  <fieldset>
+    <legend>Skill credentials (from Send Alexa Events permission)</legend>
+    <div class="row"><label>Alexa Client Id <input type="text" id="alexa-client-id" placeholder="amzn1.application-oa2-client.xxxx" size="48"></label></div>
+    <div class="row"><label>Alexa Client Secret <input type="password" id="alexa-client-secret" placeholder="••••••••" size="48"></label></div>
+  </fieldset>
+
+  <h3>Option A — automated (recommended)</h3>
+  <p>Paste this into a terminal with AWS credentials configured. It creates the DynamoDB table, both Lambdas, IAM, Function URL (with CORS for this page), then uploads the real handler code.</p>
+  <div class="platform-tabs">
+    <button class="tab active" data-tab="win">Windows</button>
+    <button class="tab" data-tab="linux">Linux / macOS</button>
+  </div>
+  <div class="artifact" data-pane="win">
+    <header>Elevated PowerShell <button class="copy" data-copy="out-deploy-ps">Copy</button></header>
+    <pre id="out-deploy-ps"></pre>
+  </div>
+  <div class="artifact" data-pane="linux" hidden>
+    <header>bash <button class="copy" data-copy="out-deploy-sh">Copy</button></header>
+    <pre id="out-deploy-sh"></pre>
+  </div>
+  <details>
+    <summary>What exactly will be created?</summary>
+    <ul>
+      <li>DynamoDB table <code>AlexaEventTokens</code> (on-demand)</li>
+      <li>Lambda <code>alexa-wake-on-lan</code> (+ role: DynamoDB get/put, CloudWatch logs) + invoke permission for <code>alexa-connectedhome.amazon.com</code></li>
+      <li>Lambda <code>wol-bridge</code> (+ role: DynamoDB get/put/delete, invoke skill Lambda)</li>
+      <li>Public Function URL on <code>wol-bridge</code>, auth NONE, CORS limited to this site's origin</li>
+    </ul>
+  </details>
+
+  <h3>Option B — manual console</h3>
+  <p>Open the pre-filled Create-Stack page (secrets are <em>not</em> embedded — you'll type them into the NoEcho fields yourself):</p>
+  <p><a id="cfn-link" class="btn" target="_blank" rel="noopener">Open CloudFormation Create-Stack →</a></p>
+
+  <div class="nav">
+    <a class="btn" href="#devices">← Back</a>
+    <a class="btn primary" href="#agent">Continue →</a>
+  </div>
+</section>
+
+<!-- ================= STEP 4: AGENT ================= -->
+<section id="agent" class="step" hidden>
+  <h2>4 · Install the PC agent</h2>
+  <p>Run the matching one-liner <strong>on the target PC</strong>. Pick a device below to have ID/secret filled in.</p>
+  <div class="row">
+    <label>Bridge Function URL (from Step 3 output)
+      <input type="url" id="bridge-url" placeholder="https://abc123.lambda-url.eu-west-1.on.aws/" size="52">
+    </label>
+  </div>
+  <div class="row">
+    <label>Pre-fill for device
+      <select id="agent-device"></select>
+    </label>
+  </div>
+  <p class="note">The installer registers a boot-persistent task (Windows: SYSTEM scheduled task; Linux: systemd service), runs WoL pre-flight checks, tests bridge connectivity, and supports <code>uninstall</code>/<code>repair</code>/<code>status</code> later.</p>
+
+  <div class="artifact">
+    <header>Windows — elevated PowerShell <button class="copy" data-copy="out-agent-win">Copy</button></header>
+    <pre id="out-agent-win"></pre>
+  </div>
+  <div class="artifact">
+    <header>Linux — bash (root) <button class="copy" data-copy="out-agent-linux">Copy</button></header>
+    <pre id="out-agent-linux"></pre>
+  </div>
+
+  <h3>Manage later (from the repo checkout)</h3>
+  <pre># Windows
+.\install-agent.ps1 -TestConnection          # one-off poll against the bridge
+.\install-agent.ps1 -Status -Live            # task state + live poll
+.\install-agent.ps1 -Repair                  # re-register task from saved config
+.\install-agent.ps1 -Uninstall -Purge        # remove everything
+
+# Linux
+./install-agent.sh status --live
+./install-agent.sh repair
+./install-agent.sh uninstall --purge</pre>
+
+  <div class="nav">
+    <a class="btn" href="#aws">← Back</a>
+    <a class="btn primary" href="#status">Continue →</a>
+  </div>
+</section>
+
+<!-- ================= STEP 5: STATUS ================= -->
+<section id="status" class="step" hidden>
+  <h2>5 · Online status</h2>
+  <p>Sends one real poll (heartbeat <code>ON</code>) to your bridge straight from this page. Your secret is sent only to your own bridge URL — nowhere else.</p>
+  <form id="status-form">
+    <div class="row"><label>deviceId <input type="text" id="st-device" placeholder="wol-pc-001" required></label></div>
+    <div class="row"><label>x-pc-secret <input type="password" id="st-secret" required></label></div>
+    <button class="btn primary" type="submit">Check status</button>
+  </form>
+  <div id="status-result" class="status-result" hidden>
+    <p id="status-verdict"></p>
+    <pre id="status-detail"></pre>
+  </div>
+
+  <div class="nav"><a class="btn" href="#agent">← Back</a></div>
+</section>
+
+</main>
+
+<footer>
+  <button id="reset-state" class="linklike">Clear saved wizard data</button>
+  <span class="hint">Wizard state lives only in this browser's localStorage.</span>
+</footer>
+
+<script src="app.js"></script>
+</body>
+</html>
