@@ -23,6 +23,37 @@ going offline can never re-fire on next boot.
 
 ## Setup
 
+### Unified entry point (recommended)
+
+`wol.ps1` (Windows) / `wol.sh` (Linux/macOS) are thin dispatchers that expose
+every management task through one interface; extra arguments are passed straight
+through to the underlying script:
+
+```powershell
+# Windows (elevated)
+.\scripts\wol.ps1 deploy -Region eu-west-1 -AlexaClientId ... -AlexaClientSecret ... -DevicesJson '[...]' -PcSecretsJson '{...}'
+.\scripts\wol.ps1 add-dev 'wol-pc-001|Office PC'      # incremental device add (auto MAC on this PC)
+.\scripts\wol.ps1 install -DeviceId wol-pc-001 -ApiUrl "https://<url>.../" -Secret REPLACE_ME
+.\scripts\wol.ps1 status -Live
+.\scripts\wol.ps1 uninstall -Purge
+.\scripts\wol.ps1 remove --delete-table               # AWS teardown
+```
+
+```bash
+# Linux/macOS
+sudo bash ./scripts/wol.sh deploy --region eu-west-1 ...          # full AWS deploy
+sudo bash ./scripts/wol.sh add-dev 'gaming-rig|Gaming Rig'        # incremental device add
+sudo bash ./scripts/wol.sh install --id wol-pc-001 --url "https://<url>.../" --secret REPLACE_ME
+bash ./scripts/wol.sh status --live
+sudo bash ./scripts/wol.sh uninstall --purge
+bash ./scripts/wol.sh remove --delete-table                       # AWS teardown
+```
+
+The dispatcher exit code mirrors the delegate script's, so it is safe to use in
+CI/scripts.
+
+### Direct calls
+
 **Automated (recommended):** open the **web installer** (`docs/installer/index.html` via GitHub
 Pages) — it collects devices/secrets, deploys the AWS side with CloudFormation and prints a
 ready-to-paste one-liner that runs `install-agent.ps1` / `install-agent.sh` on the target PC.
