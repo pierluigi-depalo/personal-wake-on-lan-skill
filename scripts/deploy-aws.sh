@@ -21,6 +21,10 @@
 # or pass the MAC explicitly for remote adds:
 #   ./deploy-aws.sh --add-device 'gaming-rig|Gaming Rig' \
 #                   --add-device 'laptop|AA:BB:CC:DD:EE:FF'
+#
+# If the AWS CLI v2 is missing it is downloaded and installed into a temp
+# directory for this run only and deleted on exit - no permanent dependency
+# (Linux x86_64/aarch64, requires unzip). Pass --no-install-aws-cli to disable.
 set -euo pipefail
 
 STACK_NAME="wol-stack"
@@ -40,6 +44,7 @@ CREATE_NEW_TABLE="true"
 RAW_BASE="https://raw.githubusercontent.com/pierluigi-depalo/personal-wake-on-lan-skill/main"
 SKIP_CODE_UPLOAD=0
 FORCE=0
+INSTALL_AWS_CLI=1
 ADD_DEVICES=()
 
 usage() { sed -n '2,20p' "$0" >&2; exit 2; }
@@ -48,6 +53,44 @@ step() { printf '==> %s\n' "$*"; }
 ok()   { printf '  OK  %s\n' "$*"; }
 warn() { printf '    !!  %s\n' "$*" >&2; }
 die()  { printf '  XX  %s\n' "$*" >&2; exit 1; }
+
+have() { command -v "$1" >/dev/null 2>&1; }
+
+# Temporary AWS CLI v2 install: lives in a temp dir, exported on PATH for this
+# run only and deleted on exit - no permanent dependency is left behind.
+AWS_CLI_TMPDIR=""
+cleanup_aws_cli() { [ -n "$AWS_CLI_TMPDIR" ] && rm -rf "$AWS_CLI_TMPDIR"; }
+trap cleanup_aws_cli EXIT
+
+ensure_aws_cli() {
+  if have aws; then return 0; fi
+  if [ "$INSTALL_AWS_CLI" != "1" ]; then
+    die "AWS CLI v2 not found - install it and run 'aws configure'"
+  fi
+  step "AWS CLI not found - temporary v2 install (deleted again on exit)"
+  have curl || have wget || die "need curl or wget to download the AWS CLI"
+  have unzip || die "'unzip' is required (apt install unzip)"
+  case "$(uname -m)" in
+    x86_64)        arch="x86_64" ;;
+    aarch64|arm64) arch="aarch64" ;;
+    *) die "unsupported architecture '$(uname -m)' for AWS CLI auto-install" ;;
+  esac
+  AWS_CLI_TMPDIR="$(mktemp -d)"
+  url="https://awscli.amazonaws.com/awscli-exe-linux-$arch.zip"
+  if have curl; then curl -fsSL "$url" -o "$AWS_CLI_TMPDIR/awscliv2.zip" ||
+    { rm -rf "$AWS_CLI_TMPDIR"; die "AWS CLI download failed"; }
+  else wget -qO "$AWS_CLI_TMPDIR/awscliv2.zip" "$url" ||
+    { rm -rf "$AWS_CLI_TMPDIR"; die "AWS CLI download failed"; }
+  fi
+  unzip -q "$AWS_CLI_TMPDIR/awscliv2.zip" -d "$AWS_CLI_TMPDIR"
+  # -i/--bin-dir keep the install inside the temp dir (no root needed).
+  "$AWS_CLI_TMPDIR/aws/install" --update \
+      -i "$AWS_CLI_TMPDIR/aws-cli" --bin-dir "$AWS_CLI_TMPDIR/bin" >/dev/null ||
+    { rm -rf "$AWS_CLI_TMPDIR"; die "AWS CLI install failed"; }
+  export PATH="$AWS_CLI_TMPDIR/bin:$PATH"
+  have aws || { rm -rf "$AWS_CLI_TMPDIR"; die "temporary AWS CLI install failed"; }
+  ok "temporary AWS CLI v2 ready ($(aws --version 2>&1))"
+}
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -68,6 +111,7 @@ while [ $# -gt 0 ]; do
     --raw-base)          RAW_BASE="$2"; shift 2 ;;
     --skip-code-upload)  SKIP_CODE_UPLOAD=1; shift ;;
     -f|--force)          FORCE=1; shift ;;
+    --no-install-aws-cli) INSTALL_AWS_CLI=0; shift ;;
     --add-device)        ADD_DEVICES+=("$2"); shift 2 ;;
     -h|--help)           usage ;;
     *) echo "unknown option: $1" >&2; usage ;;
@@ -133,7 +177,7 @@ if [ "${#ADD_DEVICES[@]}" -gt 0 ]; then
     die "duplicate endpoint ids in --add-device list"
   fi
 
-  command -v aws >/dev/null 2>&1 || die "AWS CLI v2 not found"
+  command -v aws >/dev/null 2>&1 || ensure_aws_cli
   command -v python3 >/dev/null 2>&1 || die "python3 required for JSON handling"
   aws sts get-caller-identity --output text --query Account >/dev/null ||
     die "AWS credentials not usable"
@@ -305,7 +349,7 @@ if [ "$STANDALONE" = "1" ]; then
   SRC_BRIDGE="$TMP/bridge.js"
 fi
 
-command -v aws >/dev/null 2>&1 || die "AWS CLI v2 not found - install it and run 'aws configure'"
+ensure_aws_cli
 step "checking AWS credentials"
 aws sts get-caller-identity --output text --query Account >/dev/null ||
   die "AWS credentials not usable - run 'aws configure'"
