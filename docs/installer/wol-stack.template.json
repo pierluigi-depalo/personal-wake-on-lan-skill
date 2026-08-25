@@ -1,0 +1,277 @@
+{
+  "$schema": "https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/cfn-lint-configuration-schema.json",
+  "Description": "alexa-wake-on-lan stack: DynamoDB token/state table, skill Lambda (deploy real code afterwards via scripts/deploy-aws.ps1|.sh) and public wol-bridge Lambda with Function URL. Deploy only in regions Alexa Smart Home supports: us-east-1, us-west-2, eu-west-1, ap-northeast-1.",
+  "Parameters": {
+    "AlexaClientId": {
+      "Type": "String",
+      "Description": "Skill 'Send Alexa Events' permission -> Alexa Client Id (amzn1.application-oa2-client....)"
+    },
+    "AlexaClientSecret": {
+      "Type": "String",
+      "NoEcho": true,
+      "Description": "Skill 'Send Alexa Events' permission -> Alexa Client Secret"
+    },
+    "DevicesJson": {
+      "Type": "String",
+      "Default": "",
+      "Description": "WOL_DEVICES JSON array, single line, e.g. [{\"endpointId\":\"office-pc\",\"friendlyName\":\"Office PC\",\"macAddress\":\"AA:BB:CC:DD:EE:FF\"}]. Leave empty when SingleMacAddress is used."
+    },
+    "SingleMacAddress": {
+      "Type": "String",
+      "Default": "",
+      "Description": "Single-device mode MAC (AA:BB:CC:DD:EE:FF). Leave empty when DevicesJson is used."
+    },
+    "EndpointId": {
+      "Type": "String",
+      "Default": "wol-pc-001",
+      "Description": "endpointId in single-device mode (must match the PC agent's deviceId)"
+    },
+    "FriendlyName": {
+      "Type": "String",
+      "Default": "PC",
+      "Description": "Device name shown in the Alexa app (single-device mode)"
+    },
+    "PcSecretsJson": {
+      "Type": "String",
+      "NoEcho": true,
+      "Description": "PC_SECRETS JSON map for the bridge, e.g. {\"wol-pc-001\":\"secret1\"}"
+    },
+    "DynamoTableName": {
+      "Type": "String",
+      "Default": "AlexaEventTokens",
+      "AllowedPattern": "[a-zA-Z0-9_.-]{3,255}",
+      "Description": "Existing-or-new DynamoDB table name for tokens and device state"
+    },
+    "EventGatewayUrl": {
+      "Type": "String",
+      "Default": "",
+      "Description": "Optional ALEXA_EVENT_GATEWAY_URL override. EU default https://api.eu.amazonalexa.com/v3/events; NA https://api.amazonalexa.com/v3/events; FE https://api.fe.amazonalexa.com/v3/events"
+    },
+    "DeviceStaleMs": {
+      "Type": "String",
+      "Default": "",
+      "Description": "Optional DEVICE_STALE_MS heartbeat age counted as offline (default 660000)",
+      "AllowedPattern": "^$|[0-9]+"
+    },
+    "PagesOrigin": {
+      "Type": "String",
+      "Default": "https://pierluigi-depalo.github.io",
+      "AllowedPattern": "^$|https?://[a-zA-Z0-9.:-]+",
+      "Description": "Browser origin allowed to call the bridge from the web installer's status page (CORS). Keep the GitHub Pages origin, or empty to disable CORS."
+    },
+    "CreateNewTable": {
+      "Type": "String",
+      "Default": "true",
+      "AllowedValues": ["true", "false"],
+      "Description": "true = create the table in this stack; false = reuse an existing table (e.g. from a previous manual setup)"
+    }
+  },
+  "Conditions": {
+    "ShouldCreateTable": { "Fn::Equals": [{ "Ref": "CreateNewTable" }, "true"] },
+    "HasDevicesJson": { "Fn::Not": [{ "Fn::Equals": [{ "Ref": "DevicesJson" }, ""] }] },
+    "HasSingleMac": { "Fn::Not": [{ "Fn::Equals": [{ "Ref": "SingleMacAddress" }, ""] }] },
+    "HasGatewayUrl": { "Fn::Not": [{ "Fn::Equals": [{ "Ref": "EventGatewayUrl" }, ""] }] },
+    "HasStaleMs": { "Fn::Not": [{ "Fn::Equals": [{ "Ref": "DeviceStaleMs" }, ""] }] },
+    "HasPagesOrigin": { "Fn::Not": [{ "Fn::Equals": [{ "Ref": "PagesOrigin" }, ""] }] }
+  },
+  "Resources": {
+    "WolTokensTable": {
+      "Type": "AWS::DynamoDB::Table",
+      "Condition": "ShouldCreateTable",
+      "Properties": {
+        "TableName": { "Ref": "DynamoTableName" },
+        "AttributeDefinitions": [
+          { "AttributeName": "id", "AttributeType": "S" }
+        ],
+        "KeySchema": [
+          { "AttributeName": "id", "KeyType": "HASH" }
+        ],
+        "BillingMode": "PAY_PER_REQUEST"
+      }
+    },
+    "SkillLambdaRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": { "Service": "lambda.amazonaws.com" },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        },
+        "ManagedPolicyArns": [
+          { "Fn::Sub": "arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole" }
+        ],
+        "Policies": [
+          {
+            "PolicyName": "wol-tokens-access",
+            "PolicyDocument": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Action": ["dynamodb:GetItem", "dynamodb:PutItem"],
+                  "Resource": {
+                    "Fn::If": [
+                      "ShouldCreateTable",
+                      { "Fn::GetAtt": "WolTokensTable.Arn" },
+                      { "Fn::Sub": "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${DynamoTableName}" }
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "SkillFunction": {
+      "Type": "AWS::Lambda::Function",
+      "Properties": {
+        "FunctionName": "alexa-wake-on-lan",
+        "Description": "Alexa Smart Home Wake-on-LAN skill endpoint (placeholder until scripts/deploy-aws uploads src/index.js)",
+        "Runtime": "nodejs20.x",
+        "Architectures": ["arm64"],
+        "Handler": "index.handler",
+        "Timeout": 10,
+        "Role": { "Fn::GetAtt": "SkillLambdaRole.Arn" },
+        "Code": {
+          "ZipFile": "export const handler = async () => ({ statusCode: 200, body: JSON.stringify({ error: 'placeholder - upload real code via scripts/deploy-aws' }) });"
+        },
+        "Environment": {
+          "Variables": {
+            "ALEXA_CLIENT_ID": { "Ref": "AlexaClientId" },
+            "ALEXA_CLIENT_SECRET": { "Ref": "AlexaClientSecret" },
+            "DYNAMODB_TABLE_NAME": { "Ref": "DynamoTableName" },
+            "WOL_DEVICES": { "Fn::If": ["HasDevicesJson", { "Ref": "DevicesJson" }, { "Ref": "AWS::NoValue" }] },
+            "MAC_ADDRESS": { "Fn::If": ["HasSingleMac", { "Ref": "SingleMacAddress" }, { "Ref": "AWS::NoValue" }] },
+            "ENDPOINT_ID": { "Ref": "EndpointId" },
+            "PC_FRIENDLY_NAME": { "Ref": "FriendlyName" },
+            "ALEXA_EVENT_GATEWAY_URL": { "Fn::If": ["HasGatewayUrl", { "Ref": "EventGatewayUrl" }, { "Ref": "AWS::NoValue" }] },
+            "DEVICE_STALE_MS": { "Fn::If": ["HasStaleMs", { "Ref": "DeviceStaleMs" }, { "Ref": "AWS::NoValue" }] }
+          }
+        }
+      }
+    },
+    "AlexaInvokePermission": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "FunctionName": { "Ref": "SkillFunction" },
+        "Action": "lambda:InvokeFunction",
+        "Principal": "alexa-connectedhome.amazon.com",
+        "StatementId": "alexa-smart-home-invoke"
+      }
+    },
+    "BridgeLambdaRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": { "Service": "lambda.amazonaws.com" },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        },
+        "ManagedPolicyArns": [
+          { "Fn::Sub": "arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole" }
+        ],
+        "Policies": [
+          {
+            "PolicyName": "wol-bridge-access",
+            "PolicyDocument": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Action": ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:DeleteItem"],
+                  "Resource": {
+                    "Fn::If": [
+                      "ShouldCreateTable",
+                      { "Fn::GetAtt": "WolTokensTable.Arn" },
+                      { "Fn::Sub": "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${DynamoTableName}" }
+                    ]
+                  }
+                },
+                {
+                  "Effect": "Allow",
+                  "Action": "lambda:InvokeFunction",
+                  "Resource": { "Fn::GetAtt": "SkillFunction.Arn" }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "BridgeFunction": {
+      "Type": "AWS::Lambda::Function",
+      "Properties": {
+        "FunctionName": "wol-bridge",
+        "Description": "Public polling bridge for the PC agent (placeholder until scripts/deploy-aws uploads src/bridge.js)",
+        "Runtime": "nodejs20.x",
+        "Architectures": ["arm64"],
+        "Handler": "bridge.handler",
+        "Timeout": 10,
+        "Role": { "Fn::GetAtt": "BridgeLambdaRole.Arn" },
+        "Code": {
+          "ZipFile": "export const handler = async () => ({ statusCode: 200, body: JSON.stringify({ error: 'placeholder - upload real code via scripts/deploy-aws' }) });"
+        },
+        "Environment": {
+          "Variables": {
+            "PC_SECRETS": { "Ref": "PcSecretsJson" },
+            "WOL_SKILL_FUNCTION": { "Ref": "SkillFunction" },
+            "DYNAMODB_TABLE_NAME": { "Ref": "DynamoTableName" }
+          }
+        }
+      }
+    },
+    "BridgeFunctionUrl": {
+      "Type": "AWS::Lambda::Url",
+      "Properties": {
+        "TargetFunctionArn": { "Ref": "BridgeFunction" },
+        "AuthType": "NONE",
+        "Cors": {
+          "Fn::If": [
+            "HasPagesOrigin",
+            {
+              "AllowCredentials": false,
+              "AllowHeaders": ["content-type", "x-pc-secret"],
+              "AllowMethods": ["POST", "OPTIONS"],
+              "AllowOrigins": [{ "Ref": "PagesOrigin" }],
+              "MaxAge": 86400
+            },
+            { "Ref": "AWS::NoValue" }
+          ]
+        }
+      }
+    },
+    "BridgeUrlInvokePermission": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "FunctionName": { "Ref": "BridgeFunction" },
+        "Action": "lambda:InvokeFunctionUrl",
+        "Principal": "*",
+        "FunctionUrlAuthType": "NONE"
+      }
+    }
+  },
+  "Outputs": {
+    "SkillFunctionName": {
+      "Value": { "Ref": "SkillFunction" },
+      "Description": "Pass as WOL_SKILL_FUNCTION / use with update-function-code"
+    },
+    "SkillFunctionArn": { "Value": { "Fn::GetAtt": "SkillFunction.Arn" }, "Description": "Paste into the Alexa Developer Console skill endpoint" },
+    "BridgeFunctionName": { "Value": { "Ref": "BridgeFunction" } },
+    "BridgeFunctionUrl": {
+      "Value": { "Fn::GetAtt": "BridgeFunctionUrl.FunctionUrl" },
+      "Description": "The PC agent's API_URL"
+    },
+    "TableName": { "Value": { "Ref": "DynamoTableName" } }
+  }
+}
