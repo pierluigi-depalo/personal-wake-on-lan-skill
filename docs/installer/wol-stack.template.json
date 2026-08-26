@@ -71,13 +71,14 @@
     "HasDevicesJson": { "Fn::Not": [{ "Fn::Equals": [{ "Ref": "DevicesJson" }, ""] }] },
     "HasSingleMac": { "Fn::Not": [{ "Fn::Equals": [{ "Ref": "SingleMacAddress" }, ""] }] },
     "HasGatewayUrl": { "Fn::Not": [{ "Fn::Equals": [{ "Ref": "EventGatewayUrl" }, ""] }] },
-    "HasStaleMs": { "Fn::Not": [{ "Fn::Equals": [{ "Ref": "DeviceStaleMs" }, ""] }] },
-    "HasPagesOrigin": { "Fn::Not": [{ "Fn::Equals": [{ "Ref": "PagesOrigin" }, ""] }] }
+    "HasStaleMs": { "Fn::Not": [{ "Fn::Equals": [{ "Ref": "DeviceStaleMs" }, ""] }] }
   },
   "Resources": {
     "WolTokensTable": {
       "Type": "AWS::DynamoDB::Table",
       "Condition": "ShouldCreateTable",
+      "DeletionPolicy": "Retain",
+      "UpdateReplacePolicy": "Retain",
       "Properties": {
         "TableName": { "Ref": "DynamoTableName" },
         "AttributeDefinitions": [
@@ -133,7 +134,7 @@
       "Properties": {
         "FunctionName": "alexa-wake-on-lan",
         "Description": "Alexa Smart Home Wake-on-LAN skill endpoint (placeholder until scripts/deploy-aws uploads src/index.js)",
-        "Runtime": "nodejs20.x",
+        "Runtime": "nodejs24.x",
         "Architectures": ["arm64"],
         "Handler": "index.handler",
         "Timeout": 10,
@@ -161,8 +162,7 @@
       "Properties": {
         "FunctionName": { "Ref": "SkillFunction" },
         "Action": "lambda:InvokeFunction",
-        "Principal": "alexa-connectedhome.amazon.com",
-        "StatementId": "alexa-smart-home-invoke"
+        "Principal": "alexa-connectedhome.amazon.com"
       }
     },
     "BridgeLambdaRole": {
@@ -214,7 +214,7 @@
       "Properties": {
         "FunctionName": "wol-bridge",
         "Description": "Public polling bridge for the PC agent (placeholder until scripts/deploy-aws uploads src/bridge.js)",
-        "Runtime": "nodejs20.x",
+        "Runtime": "nodejs24.x",
         "Architectures": ["arm64"],
         "Handler": "bridge.handler",
         "Timeout": 10,
@@ -237,17 +237,11 @@
         "TargetFunctionArn": { "Ref": "BridgeFunction" },
         "AuthType": "NONE",
         "Cors": {
-          "Fn::If": [
-            "HasPagesOrigin",
-            {
-              "AllowCredentials": false,
-              "AllowHeaders": ["content-type", "x-pc-secret"],
-              "AllowMethods": ["POST", "OPTIONS"],
-              "AllowOrigins": [{ "Ref": "PagesOrigin" }],
-              "MaxAge": 86400
-            },
-            { "Ref": "AWS::NoValue" }
-          ]
+          "AllowCredentials": false,
+          "AllowHeaders": ["content-type", "x-pc-secret"],
+          "AllowMethods": ["POST"],
+          "AllowOrigins": [{ "Ref": "PagesOrigin" }],
+          "MaxAge": 86400
         }
       }
     },
