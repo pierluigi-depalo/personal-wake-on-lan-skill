@@ -319,6 +319,17 @@ if ($SingleMacAddress) { $overrides += "SingleMacAddress=$SingleMacAddress" }
 if ($EventGatewayUrl)  { $overrides += "EventGatewayUrl=$EventGatewayUrl" }
 if ($DeviceStaleMs)    { $overrides += "DeviceStaleMs=$DeviceStaleMs" }
 
+if ((Get-Content $templateFile -Raw) -match '"\$schema"') {
+  $cleanFile = Join-Path $work "wol-stack.clean.json"
+  $tmpl = Get-Content $templateFile -Raw | ConvertFrom-Json
+  $tmpl.PSObject.Properties.Remove('$schema')
+  # ensure format version is set for CFN
+  if (-not $tmpl.PSObject.Properties['AWSTemplateFormatVersion']) {
+    $tmpl | Add-Member -NotePropertyName AWSTemplateFormatVersion -NotePropertyValue "2010-09-09"
+  }
+  $tmpl | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $cleanFile -Encoding UTF8
+  $templateFile = $cleanFile
+}
 Write-Step "deploying stack '$StackName' to $Region"
 aws cloudformation deploy `
   --stack-name $StackName `

@@ -1,5 +1,5 @@
 {
-  "$schema": "https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/cfn-lint-configuration-schema.json",
+  "AWSTemplateFormatVersion": "2010-09-09",
   "Description": "alexa-wake-on-lan stack: DynamoDB token/state table, skill Lambda (deploy real code afterwards via scripts/deploy-aws.ps1|.sh) and public wol-bridge Lambda with Function URL. Deploy only in regions Alexa Smart Home supports: us-east-1, us-west-2, eu-west-1, ap-northeast-1.",
   "Parameters": {
     "AlexaClientId": {

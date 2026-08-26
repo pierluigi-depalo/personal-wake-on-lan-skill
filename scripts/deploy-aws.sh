@@ -349,6 +349,20 @@ PY
   rm -rf "$stage"
 }
 
+if grep -qF '$schema' "$TEMPLATE" 2>/dev/null; then
+  CLEAN_TMPL="$TMP/clean-template.json"
+  if command -v python3 >/dev/null 2>&1; then
+    python3 -c 'import json,sys; p=sys.argv[1]; o=sys.argv[2]; d=json.load(open(p)); d.pop("$schema",None); d.setdefault("AWSTemplateFormatVersion","2010-09-09"); json.dump(d, open(o,"w"), indent=2)' "$TEMPLATE" "$CLEAN_TMPL"
+  else
+    # Fallback for hosts without python3: strip the $schema line and insert the
+    # format version right after the opening brace.
+    sed '/"\$schema"/d' "$TEMPLATE" > "$CLEAN_TMPL"
+    if ! grep -q 'AWSTemplateFormatVersion' "$CLEAN_TMPL"; then
+      sed -i '1a\  "AWSTemplateFormatVersion": "2010-09-09",' "$CLEAN_TMPL"
+    fi
+  fi
+  TEMPLATE="$CLEAN_TMPL"
+fi
 step "packaging handler zips"
 SKILL_ZIP="$TMP/skill.zip"
 BRIDGE_ZIP="$TMP/bridge.zip"
