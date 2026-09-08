@@ -253,6 +253,14 @@
         "Principal": "*",
         "FunctionUrlAuthType": "NONE"
       }
+    },
+    "BridgeFunctionInvokePermission": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "FunctionName": { "Ref": "BridgeFunction" },
+        "Action": "lambda:InvokeFunction",
+        "Principal": "*"
+      }
     }
   },
   "Outputs": {
