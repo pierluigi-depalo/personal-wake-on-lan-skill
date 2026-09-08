@@ -28,6 +28,7 @@ usage: wol.sh <subcommand> [args...]
   uninstall [--purge]                 remove the service
   status [--live]                     show agent state / poll the bridge
   test    [ID URL SECRET]             one-off bridge connectivity check
+  credentials [options]               update Alexa/PC agent credentials
   remove [remove-aws.sh args]         tear down the AWS deployment
 EOF
 }
@@ -65,6 +66,7 @@ case "$sub" in
   status)    exec "$DIR/install-agent.sh" status "$@" ;;
   test)      exec "$DIR/install-agent.sh" test "$@" ;;
   wizard)    exec "$DIR/install-agent.sh" wizard "$@" ;;
+  credentials|update-credentials) exec "$DIR/update-credentials.sh" "$@" ;;
   remove|teardown) exec "$DIR/remove-aws.sh" "$@" ;;
   help|-h|--help) usage ;;
   *)
