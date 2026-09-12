@@ -98,12 +98,6 @@ Prefer a wizard? The **[web installer](docs/installer/index.html)** (GitHub Page
 
 ---
 
-## Acknowledgments
-
-This project is based on the [`alexa-wake-on-lan`](https://github.com/amerker/alexa-wake-on-lan/) project by amerker (MIT Licensed), extended to support multiple devices.
-
----
-
 ## License
 
 [MIT](LICENSE)
