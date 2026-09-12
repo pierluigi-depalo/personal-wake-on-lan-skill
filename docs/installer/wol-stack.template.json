@@ -64,6 +64,18 @@
       "Default": "true",
       "AllowedValues": ["true", "false"],
       "Description": "true = create the table in this stack; false = reuse an existing table (e.g. from a previous manual setup)"
+    },
+    "SkillFunctionName": {
+      "Type": "String",
+      "Default": "alexa-wake-on-lan",
+      "AllowedPattern": "[a-zA-Z0-9-_]{1,64}",
+      "Description": "Function name for the Alexa skill Lambda"
+    },
+    "BridgeFunctionName": {
+      "Type": "String",
+      "Default": "wol-bridge",
+      "AllowedPattern": "[a-zA-Z0-9-_]{1,64}",
+      "Description": "Function name for the PC agent bridge Lambda"
     }
   },
   "Conditions": {
@@ -132,7 +144,7 @@
     "SkillFunction": {
       "Type": "AWS::Lambda::Function",
       "Properties": {
-        "FunctionName": "alexa-wake-on-lan",
+        "FunctionName": { "Ref": "SkillFunctionName" },
         "Description": "Alexa Smart Home Wake-on-LAN skill endpoint (placeholder until scripts/deploy-aws uploads src/index.js)",
         "Runtime": "nodejs24.x",
         "Architectures": ["arm64"],
@@ -212,7 +224,7 @@
     "BridgeFunction": {
       "Type": "AWS::Lambda::Function",
       "Properties": {
-        "FunctionName": "wol-bridge",
+        "FunctionName": { "Ref": "BridgeFunctionName" },
         "Description": "Public polling bridge for the PC agent (placeholder until scripts/deploy-aws uploads src/bridge.js)",
         "Runtime": "nodejs24.x",
         "Architectures": ["arm64"],

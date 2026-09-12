@@ -25,13 +25,15 @@ die()  { printf '  XX  %s\n' "$*" >&2; exit 1; }
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    -r|--region)      REGION="$2"; shift 2 ;;
-    -s|--stack)       STACK_NAME="$2"; shift 2 ;;
-    -t|--table)       TABLE_NAME="$2"; shift 2 ;;
-    --delete-table)   DELETE_TABLE=1; shift ;;
-    --delete-logs)    DELETE_LOGS=1; shift ;;
-    -y|--yes)         ASSUME_YES=1; shift ;;
-    -h|--help)        sed -n '2,8p' "$0"; exit 0 ;;
+    -r|--region)          REGION="$2"; shift 2 ;;
+    -s|--stack)           STACK_NAME="$2"; shift 2 ;;
+    -t|--table)           TABLE_NAME="$2"; shift 2 ;;
+    --skill-function)     FUNCTIONS[0]="$2"; shift 2 ;;
+    --bridge-function)    FUNCTIONS[1]="$2"; shift 2 ;;
+    --delete-table)       DELETE_TABLE=1; shift ;;
+    --delete-logs)        DELETE_LOGS=1; shift ;;
+    -y|--yes)             ASSUME_YES=1; shift ;;
+    -h|--help)            sed -n '2,8p' "$0"; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
 done

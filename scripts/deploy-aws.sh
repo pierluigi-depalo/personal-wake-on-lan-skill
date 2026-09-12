@@ -33,6 +33,8 @@ ENDPOINT_ID="wol-pc-001"
 FRIENDLY_NAME="PC"
 PC_SECRETS_JSON=""
 TABLE_NAME="AlexaEventTokens"
+SKILL_FUNCTION_NAME="alexa-wake-on-lan"
+BRIDGE_FUNCTION_NAME="wol-bridge"
 GATEWAY_URL=""
 DEVICE_STALE_MS=""
 PAGES_ORIGIN="https://pierluigi-depalo.github.io"
@@ -61,6 +63,8 @@ while [ $# -gt 0 ]; do
     --friendly-name)     FRIENDLY_NAME="$2"; shift 2 ;;
     --secrets)           PC_SECRETS_JSON="$2"; shift 2 ;;
     --table)             TABLE_NAME="$2"; shift 2 ;;
+    --skill-function)    SKILL_FUNCTION_NAME="$2"; shift 2 ;;
+    --bridge-function)   BRIDGE_FUNCTION_NAME="$2"; shift 2 ;;
     --gateway-url)       GATEWAY_URL="$2"; shift 2 ;;
     --stale-ms)          DEVICE_STALE_MS="$2"; shift 2 ;;
     --pages-origin)      PAGES_ORIGIN="$2"; shift 2 ;;
@@ -319,7 +323,7 @@ if [ "$CREATE_NEW_TABLE" = "true" ]; then
     [ "$FORCE" = "1" ] && warn "$msg" || die "$msg"
   fi
 fi
-for fn in alexa-wake-on-lan wol-bridge; do
+for fn in "$SKILL_FUNCTION_NAME" "$BRIDGE_FUNCTION_NAME"; do
   if aws lambda get-function --function-name "$fn" --region "$REGION" >/dev/null 2>&1; then
     msg="Lambda '$fn' already exists (outside the stack?) - run scripts/remove-aws.sh first, or retry with --force"
     [ "$FORCE" = "1" ] && warn "$msg" || die "$msg"
@@ -382,6 +386,8 @@ ARGS=(--stack-name "$STACK_NAME"
         "FriendlyName=$FRIENDLY_NAME"
         "PcSecretsJson=$PC_SECRETS_JSON"
         "DynamoTableName=$TABLE_NAME"
+        "SkillFunctionName=$SKILL_FUNCTION_NAME"
+        "BridgeFunctionName=$BRIDGE_FUNCTION_NAME"
         "PagesOrigin=$PAGES_ORIGIN"
         "CreateNewTable=$CREATE_NEW_TABLE")
 [ -n "$DEVICES_JSON" ]     && ARGS+=("DevicesJson=$DEVICES_JSON")

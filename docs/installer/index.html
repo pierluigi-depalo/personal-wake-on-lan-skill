@@ -89,6 +89,16 @@
     <div class="row"><label>Alexa Client Secret <input type="password" id="alexa-client-secret" placeholder="••••••••" size="48"></label></div>
   </fieldset>
 
+  <details class="advanced-naming" style="margin: 1rem 0;">
+    <summary style="cursor: pointer; color: var(--muted); font-size: 0.9rem;">Advanced naming options (optional)</summary>
+    <div style="margin-top: 0.6rem; padding-left: 0.5rem; border-left: 2px solid var(--border);">
+      <div class="row"><label>Stack Name <input type="text" id="stack-name" placeholder="wol-stack" value="wol-stack" size="32"></label></div>
+      <div class="row"><label>DynamoDB Table Name <input type="text" id="dynamo-table-name" placeholder="AlexaEventTokens" value="AlexaEventTokens" size="32"></label></div>
+      <div class="row"><label>Skill Lambda Name <input type="text" id="skill-function-name" placeholder="alexa-wake-on-lan" value="alexa-wake-on-lan" size="32"></label></div>
+      <div class="row"><label>Bridge Lambda Name <input type="text" id="bridge-function-name" placeholder="wol-bridge" value="wol-bridge" size="32"></label></div>
+    </div>
+  </details>
+
   <h3>Option A — automated (recommended)</h3>
   <p>Paste this into a terminal with AWS credentials configured. It creates the DynamoDB table, both Lambdas, IAM, Function URL (with CORS for this page), then uploads the real handler code.</p>
   <div class="platform-tabs">

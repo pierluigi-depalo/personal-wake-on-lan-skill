@@ -11,7 +11,17 @@ const GATEWAY_BY_REGION = {
 };
 
 const state = Object.assign(
-  { region: "eu-west-1", devices: [], alexaClientId: "", alexaClientSecret: "", bridgeUrl: "" },
+  {
+    region: "eu-west-1",
+    devices: [],
+    alexaClientId: "",
+    alexaClientSecret: "",
+    bridgeUrl: "",
+    stackName: "wol-stack",
+    dynamoTableName: "AlexaEventTokens",
+    skillFunctionName: "alexa-wake-on-lan",
+    bridgeFunctionName: "wol-bridge",
+  },
   JSON.parse(localStorage.getItem(STATE_KEY) || "{}")
 );
 
@@ -156,10 +166,19 @@ function cfnDeepLink() {
   const region = state.region;
   const params = new URLSearchParams();
   params.set("templateURL", templateUrl());
-  params.set("stackName", "wol-stack");
+  params.set("stackName", state.stackName || "wol-stack");
   if (state.alexaClientId) params.set("param_AlexaClientId", state.alexaClientId);
   try { params.set("param_DevicesJson", devicesJson()); } catch (_) {}
   params.set("param_PagesOrigin", location.origin);
+  if (state.dynamoTableName && state.dynamoTableName !== "AlexaEventTokens") {
+    params.set("param_DynamoTableName", state.dynamoTableName);
+  }
+  if (state.skillFunctionName && state.skillFunctionName !== "alexa-wake-on-lan") {
+    params.set("param_SkillFunctionName", state.skillFunctionName);
+  }
+  if (state.bridgeFunctionName && state.bridgeFunctionName !== "wol-bridge") {
+    params.set("param_BridgeFunctionName", state.bridgeFunctionName);
+  }
   // Secrets deliberately NOT embedded (they would land in browser history).
   return (
     `https://${region}.console.aws.amazon.com/cloudformation/home?region=${region}` +
@@ -175,25 +194,50 @@ function deployOneLinerPs() {
     "-AlexaClientSecret", psQuote(state.alexaClientSecret),
     "-DevicesJson", psQuote(devicesJson()),
     "-PcSecretsJson", psQuote(pcSecretsJson()),
-  ].join(" ");
+  ];
+  if (state.stackName && state.stackName !== "wol-stack") {
+    args.push("-StackName", psQuote(state.stackName));
+  }
+  if (state.dynamoTableName && state.dynamoTableName !== "AlexaEventTokens") {
+    args.push("-DynamoTableName", psQuote(state.dynamoTableName));
+  }
+  if (state.skillFunctionName && state.skillFunctionName !== "alexa-wake-on-lan") {
+    args.push("-SkillFunctionName", psQuote(state.skillFunctionName));
+  }
+  if (state.bridgeFunctionName && state.bridgeFunctionName !== "wol-bridge") {
+    args.push("-BridgeFunctionName", psQuote(state.bridgeFunctionName));
+  }
   return (
     `iwr ${url} -OutFile "$env:TEMP\\deploy-wol.ps1"; ` +
-    `powershell -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\\deploy-wol.ps1" ${args}`
+    `powershell -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\\deploy-wol.ps1" ${args.join(" ")}`
   );
 }
 
 function deployOneLinerSh() {
   const url = `${RAW_BASE}/scripts/deploy-aws.sh`;
   const gw = GATEWAY_BY_REGION[state.region];
-  return (
-    `curl -fsSL ${url} -o /tmp/deploy-wol.sh && bash /tmp/deploy-wol.sh` +
+  let cmd = `curl -fsSL ${url} -o /tmp/deploy-wol.sh && bash /tmp/deploy-wol.sh` +
     ` --region ${state.region}` +
     ` --client-id ${shQuote(state.alexaClientId)}` +
     ` --client-secret ${shQuote(state.alexaClientSecret)}` +
     ` --devices ${shQuote(devicesJson())}` +
-    ` --secrets ${shQuote(pcSecretsJson())}` +
-    (gw ? ` --gateway-url ${gw}` : "")
-  );
+    ` --secrets ${shQuote(pcSecretsJson())}`;
+  if (state.stackName && state.stackName !== "wol-stack") {
+    cmd += ` --stack ${shQuote(state.stackName)}`;
+  }
+  if (state.dynamoTableName && state.dynamoTableName !== "AlexaEventTokens") {
+    cmd += ` --table ${shQuote(state.dynamoTableName)}`;
+  }
+  if (state.skillFunctionName && state.skillFunctionName !== "alexa-wake-on-lan") {
+    cmd += ` --skill-function ${shQuote(state.skillFunctionName)}`;
+  }
+  if (state.bridgeFunctionName && state.bridgeFunctionName !== "wol-bridge") {
+    cmd += ` --bridge-function ${shQuote(state.bridgeFunctionName)}`;
+  }
+  if (gw) {
+    cmd += ` --gateway-url ${gw}`;
+  }
+  return cmd;
 }
 
 function agentInstallWin(dev) {
@@ -299,6 +343,28 @@ $("#alexa-client-id").addEventListener("input", (e) => {
   saveState();
   renderOutputs();
 });
+if ($("#alexa-client-secret")) {
+  $("#alexa-client-secret").addEventListener("input", (e) => {
+    state.alexaClientSecret = e.target.value;
+    saveState();
+    renderOutputs();
+  });
+}
+[
+  { id: "stack-name", key: "stackName", def: "wol-stack" },
+  { id: "dynamo-table-name", key: "dynamoTableName", def: "AlexaEventTokens" },
+  { id: "skill-function-name", key: "skillFunctionName", def: "alexa-wake-on-lan" },
+  { id: "bridge-function-name", key: "bridgeFunctionName", def: "wol-bridge" },
+].forEach(({ id, key, def }) => {
+  const el = $(`#${id}`);
+  if (el) {
+    el.addEventListener("input", (e) => {
+      state[key] = e.target.value.trim() || def;
+      saveState();
+      renderOutputs();
+    });
+  }
+});
 $("#agent-device").addEventListener("change", renderAgentOutput);
 
 $("#status-form").addEventListener("submit", async (e) => {
@@ -387,6 +453,11 @@ window.addEventListener("hashchange", () => {
 
 $("#region").value = state.region;
 $("#alexa-client-id").value = state.alexaClientId;
+if ($("#alexa-client-secret")) $("#alexa-client-secret").value = state.alexaClientSecret || "";
+if ($("#stack-name")) $("#stack-name").value = state.stackName || "wol-stack";
+if ($("#dynamo-table-name")) $("#dynamo-table-name").value = state.dynamoTableName || "AlexaEventTokens";
+if ($("#skill-function-name")) $("#skill-function-name").value = state.skillFunctionName || "alexa-wake-on-lan";
+if ($("#bridge-function-name")) $("#bridge-function-name").value = state.bridgeFunctionName || "wol-bridge";
 $("#bridge-url").value = state.bridgeUrl;
 renderDevices();
 showStep(location.hash.slice(1) || "prereqs");

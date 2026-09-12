@@ -47,6 +47,8 @@ param(
   [string]$PagesOrigin = "https://pierluigi-depalo.github.io",
   [ValidateSet("true", "false")]
   [string]$CreateNewTable = "true",
+  [string]$SkillFunctionName = "alexa-wake-on-lan",
+  [string]$BridgeFunctionName = "wol-bridge",
 
   # Standalone mode: where to fetch template + handlers from.
   [string]$RawBase = "https://raw.githubusercontent.com/pierluigi-depalo/personal-wake-on-lan-skill/main",
@@ -276,7 +278,7 @@ if ($CreateNewTable -eq 'true') {
     if ($Force) { Write-Warn2 $msg } else { throw $msg }
   }
 }
-foreach ($fnName in @('alexa-wake-on-lan', 'wol-bridge')) {
+foreach ($fnName in @($SkillFunctionName, $BridgeFunctionName)) {
   aws lambda get-function --function-name $fnName --region $Region 2>$null | Out-Null
   if ($LASTEXITCODE -eq 0) {
     $msg = "Lambda '$fnName' already exists (outside the stack?) - run scripts\remove-aws.ps1 first, or retry with -Force"
@@ -311,6 +313,8 @@ $overrides = @(
   "FriendlyName=$FriendlyName",
   "PcSecretsJson=$PcSecretsJson",
   "DynamoTableName=$DynamoTableName",
+  "SkillFunctionName=$SkillFunctionName",
+  "BridgeFunctionName=$BridgeFunctionName",
   "PagesOrigin=$PagesOrigin",
   "CreateNewTable=$CreateNewTable"
 )
