@@ -34,6 +34,7 @@
     "PcSecretsJson": {
       "Type": "String",
       "NoEcho": true,
+      "Default": "{}",
       "Description": "PC_SECRETS JSON map for the bridge, e.g. {\"wol-pc-001\":\"secret1\"}"
     },
     "DynamoTableName": {

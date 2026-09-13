@@ -6,8 +6,8 @@
 #
 # Usage:
 #   ./wol.sh deploy [deploy-aws.sh args]
-#   sudo ./wol.sh add-dev 'endpointId|FriendlyName|MAC' [...]
-#   sudo ./wol.sh install --id ID --url URL --secret SECRET [--grace N]   # or no options = wizard
+#   sudo ./wol.sh add-dev 'endpointId|FriendlyName|MAC[|Secret]' [...]
+#   sudo ./wol.sh install [--id ID --url URL [--secret SECRET] [--grace N] [--register-aws]]
 #   ./wol.sh status [--live]
 #   sudo ./wol.sh uninstall [--purge]
 #   ./wol.sh test [DEVICE_ID API_URL SECRET]
@@ -21,9 +21,10 @@ usage() {
 usage: wol.sh <subcommand> [args...]
 
   deploy   [deploy-aws.sh args]      deploy/update the AWS side
-  add-dev  <id[|Name][|MAC]> [...]   add devices to an existing deployment
-  install  [--id .. --url .. --secret ..] [--grace N]
-                                     install the agent + systemd service (root)
+  add-dev  <id[|Name][|MAC][|Secret]> [...]
+                                     add devices to an existing deployment
+  install  [--id .. --url .. [--secret ..]] [--grace N] [--register-aws]
+                                     install the agent + systemd service (auto-generates secret if omitted)
   repair                              re-register the service from saved config
   uninstall [--purge]                 remove the service
   status [--live]                     show agent state / poll the bridge
@@ -40,7 +41,7 @@ case "$sub" in
   deploy) exec "$DIR/deploy-aws.sh" "$@" ;;
   add-dev)
     if [ $# -eq 0 ]; then
-      echo "usage: wol.sh add-dev 'endpointId|FriendlyName|MAC' [...]" >&2
+      echo "usage: wol.sh add-dev 'endpointId|FriendlyName|MAC[|Secret]' [...]" >&2
       exit 2
     fi
     args=()
@@ -48,18 +49,20 @@ case "$sub" in
     exec "$DIR/deploy-aws.sh" "${args[@]}"
     ;;
   install)
-    # Accept --id/--url/--secret/--grace and forward as the env vars that
+    # Accept --id/--url/--secret/--grace/--register-aws and forward as the env vars that
     # install-agent.sh understands; with none given it runs its wizard.
+    extra_args=()
     while [ $# -gt 0 ]; do
       case "$1" in
-        --id)     export DEVICE_ID="$2"; shift 2 ;;
-        --url)    export API_URL="$2";   shift 2 ;;
-        --secret) export SECRET="$2";    shift 2 ;;
-        --grace)  export GRACE="$2";     shift 2 ;;
-        *) echo "unknown option: $1 (expected --id/--url/--secret/--grace)" >&2; exit 2 ;;
+        --id)           export DEVICE_ID="$2"; shift 2 ;;
+        --url)          export API_URL="$2";   shift 2 ;;
+        --secret)       export SECRET="$2";    shift 2 ;;
+        --grace)        export GRACE="$2";     shift 2 ;;
+        --register-aws) extra_args+=(--register-aws); shift ;;
+        *) echo "unknown option: $1 (expected --id/--url/--secret/--grace/--register-aws)" >&2; exit 2 ;;
       esac
     done
-    exec "$DIR/install-agent.sh" install
+    exec "$DIR/install-agent.sh" install "${extra_args[@]}"
     ;;
   repair)    exec "$DIR/install-agent.sh" repair "$@" ;;
   uninstall) exec "$DIR/install-agent.sh" uninstall "$@" ;;

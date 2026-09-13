@@ -115,7 +115,7 @@ function renderDevices() {
   if (!state.devices.length) {
     const p = document.createElement("p");
     p.className = "note";
-    p.textContent = "No devices yet — add at least one.";
+    p.textContent = "No devices added yet — you can deploy the stack now and add devices later, or add devices below.";
     list.appendChild(p);
   }
   renderOutputs();
@@ -124,7 +124,6 @@ function renderDevices() {
 function validateDevices() {
   const problems = [];
   const seen = new Set();
-  if (!state.devices.length) problems.push("Add at least one device.");
   state.devices.forEach((d) => {
     const tag = d.endpointId || "(unnamed)";
     if (!/^[a-z0-9][a-z0-9-]{1,62}$/i.test(d.endpointId || ""))
@@ -168,7 +167,9 @@ function cfnDeepLink() {
   params.set("templateURL", templateUrl());
   params.set("stackName", state.stackName || "wol-stack");
   if (state.alexaClientId) params.set("param_AlexaClientId", state.alexaClientId);
-  try { params.set("param_DevicesJson", devicesJson()); } catch (_) {}
+  if (state.devices.length) {
+    try { params.set("param_DevicesJson", devicesJson()); } catch (_) {}
+  }
   params.set("param_PagesOrigin", location.origin);
   if (state.dynamoTableName && state.dynamoTableName !== "AlexaEventTokens") {
     params.set("param_DynamoTableName", state.dynamoTableName);
@@ -192,9 +193,11 @@ function deployOneLinerPs() {
     "-Region", psQuote(state.region),
     "-AlexaClientId", psQuote(state.alexaClientId),
     "-AlexaClientSecret", psQuote(state.alexaClientSecret),
-    "-DevicesJson", psQuote(devicesJson()),
-    "-PcSecretsJson", psQuote(pcSecretsJson()),
   ];
+  if (state.devices.length) {
+    args.push("-DevicesJson", psQuote(devicesJson()));
+    args.push("-PcSecretsJson", psQuote(pcSecretsJson()));
+  }
   if (state.stackName && state.stackName !== "wol-stack") {
     args.push("-StackName", psQuote(state.stackName));
   }
@@ -219,9 +222,11 @@ function deployOneLinerSh() {
   let cmd = `curl -fsSL ${url} -o /tmp/deploy-wol.sh && bash /tmp/deploy-wol.sh` +
     ` --region ${state.region}` +
     ` --client-id ${shQuote(state.alexaClientId)}` +
-    ` --client-secret ${shQuote(state.alexaClientSecret)}` +
-    ` --devices ${shQuote(devicesJson())}` +
-    ` --secrets ${shQuote(pcSecretsJson())}`;
+    ` --client-secret ${shQuote(state.alexaClientSecret)}`;
+  if (state.devices.length) {
+    cmd += ` --devices ${shQuote(devicesJson())}` +
+      ` --secrets ${shQuote(pcSecretsJson())}`;
+  }
   if (state.stackName && state.stackName !== "wol-stack") {
     cmd += ` --stack ${shQuote(state.stackName)}`;
   }
@@ -272,8 +277,8 @@ function renderOutputs() {
   setPre("#out-wol-devices", ok ? devicesJson() : "# fix validation errors above");
   setPre("#out-pc-secrets", ok ? pcSecretsJson() : "# fix validation errors above");
 
-  setPre("#out-deploy-ps", ok && state.alexaClientId ? deployOneLinerPs() : "# fill in devices + client id first");
-  setPre("#out-deploy-sh", ok && state.alexaClientId ? deployOneLinerSh() : "# fill in devices + client id first");
+  setPre("#out-deploy-ps", ok && state.alexaClientId ? deployOneLinerPs() : "# fill in Alexa Client ID first");
+  setPre("#out-deploy-sh", ok && state.alexaClientId ? deployOneLinerSh() : "# fill in Alexa Client ID first");
 
   $("#cfn-link").href = cfnDeepLink();
 
@@ -302,8 +307,19 @@ function renderAgentOutput() {
   const idx = parseInt($("#agent-device").value || "0", 10);
   const dev = state.devices[idx];
   if (!dev) {
-    setPre("#out-agent-win", "# add a device first");
-    setPre("#out-agent-linux", "# add a device first");
+    const bridge = state.bridgeUrl || "<bridge-function-url>";
+    setPre(
+      "#out-agent-win",
+      `# Install agent on target PC (generates an ad-hoc secret if none is provided):\n` +
+      `iwr ${RAW_BASE}/scripts/install-agent.ps1 -OutFile "$env:TEMP\\wol-install.ps1"; ` +
+      `powershell -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\\wol-install.ps1" -Install -DeviceId "wol-pc-001" -ApiUrl ${psQuote(bridge)}`
+    );
+    setPre(
+      "#out-agent-linux",
+      `# Install agent on target PC (generates an ad-hoc secret if none is provided):\n` +
+      `curl -fsSL ${RAW_BASE}/scripts/install-agent.sh | sudo env DEVICE_ID='wol-pc-001' API_URL=${shQuote(bridge)} bash -s -- install\n` +
+      `# or interactively:\n# curl -fsSL ${RAW_BASE}/scripts/install-agent.sh -o /tmp/wol-install.sh && sudo bash /tmp/wol-install.sh`
+    );
     return;
   }
   setPre("#out-agent-win", agentInstallWin(dev));

@@ -49,6 +49,7 @@ param(
   [string]$AgentSourceUrl = "https://raw.githubusercontent.com/pierluigi-depalo/personal-wake-on-lan-skill/main/scripts/wol-agent.ps1",
   [switch]$FixFastStartup,
   [switch]$SkipPreflight,
+  [switch]$RegisterAws,
   [switch]$Purge,
   [switch]$Live
 )
@@ -83,6 +84,59 @@ function Save-Config($cfg) {
   icacls $configPath /inheritance:r /grant:r "SYSTEM:F" "Administrators:F" | Out-Null
 }
 
+function New-RandomSecret {
+  $bytes = New-Object byte[] 32
+  ([Security.Cryptography.RandomNumberGenerator]::Create()).GetBytes($bytes)
+  return (($bytes | ForEach-Object { $_.ToString('x2') }) -join '')
+}
+
+function Register-AwsDevice([string]$deviceId, [string]$secret, [string]$apiUrl) {
+  if (-not (Get-Command aws -ErrorAction SilentlyContinue)) {
+    Write-Warn2 "AWS CLI not found on PATH - cannot register device in AWS automatically."
+    return $false
+  }
+  aws sts get-caller-identity --output text --query Account 1>$null 2>$null
+  if ($LASTEXITCODE -ne 0) {
+    Write-Warn2 "AWS credentials not configured or expired - cannot register device in AWS automatically."
+    return $false
+  }
+  $reg = "eu-west-1"
+  if ($apiUrl -match 'lambda-url\.([a-z0-9-]+)\.on\.aws') {
+    $reg = $Matches[1]
+  }
+  Write-Step "registering device '$deviceId' in wol-bridge Lambda (region $reg)"
+  try {
+    $cfg = aws lambda get-function-configuration --function-name "wol-bridge" --region $reg --output json 2>$null | ConvertFrom-Json
+    if (-not $cfg) {
+      Write-Warn2 "could not find 'wol-bridge' Lambda in region $reg"
+      return $false
+    }
+    $vars = @{}
+    if ($cfg.Environment -and $cfg.Environment.Variables) {
+      foreach ($p in $cfg.Environment.Variables.PSObject.Properties) { $vars[$p.Name] = $p.Value }
+    }
+    $secrets = @{}
+    if ($vars['PC_SECRETS']) {
+      try {
+        $sObj = $vars['PC_SECRETS'] | ConvertFrom-Json
+        foreach ($p in $sObj.PSObject.Properties) { $secrets[$p.Name] = $p.Value }
+      } catch {}
+    }
+    $secrets[$deviceId] = $secret
+    $vars['PC_SECRETS'] = ConvertTo-Json -Compress -InputObject $secrets
+    $payloadFile = Join-Path ([IO.Path]::GetTempPath()) ("env-" + [guid]::NewGuid().ToString('N').Substring(0, 8) + ".json")
+    @{ Variables = $vars } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $payloadFile -Encoding UTF8
+    aws lambda update-function-configuration --function-name "wol-bridge" --region $reg `
+      --environment "file://$($payloadFile -replace '\\', '/')" 1>$null 2>$null
+    Remove-Item -LiteralPath $payloadFile -Force -ErrorAction SilentlyContinue
+    Write-Ok "registered secret in wol-bridge on AWS"
+    return $true
+  } catch {
+    Write-Warn2 "failed to update wol-bridge: $($_.Exception.Message)"
+    return $false
+  }
+}
+
 function Resolve-ConfigValues {
   $cfg = Get-Config
   # NOTE: plain '$x = if ...' is not valid in PowerShell 5.1 - wrap in $().
@@ -90,10 +144,39 @@ function Resolve-ConfigValues {
   $apiUrl   = $(if ($ApiUrl)   { $ApiUrl }   elseif ($cfg) { $cfg.apiUrl }   else { $null })
   $secret   = $(if ($Secret)   { $Secret }   elseif ($cfg) { $cfg.secret }   else { $null })
   $grace    = $(if ($PSBoundParameters.ContainsKey('GraceSeconds')) { $GraceSeconds } elseif ($cfg) { [int]$cfg.graceSeconds } else { 10 })
-  foreach ($pair in @(@('DeviceId', $deviceId), @('ApiUrl', $apiUrl), @('Secret', $secret))) {
-    if (-not $pair[1]) { throw "$($pair[0]) is required (pass it or install first)." }
+
+  if (-not $deviceId) {
+    if ([Environment]::UserInteractive -and -not [Console]::IsInputRedirected) {
+      $inputDev = Read-Host "Device ID (must match WOL_DEVICES on the skill) [wol-pc-001]"
+      $deviceId = $(if ($inputDev -and $inputDev.Trim()) { $inputDev.Trim() } else { "wol-pc-001" })
+    } else {
+      $deviceId = "wol-pc-001"
+    }
   }
-  [pscustomobject]@{ DeviceId = $deviceId; ApiUrl = $apiUrl; Secret = $secret; GraceSeconds = $grace }
+
+  if (-not $apiUrl) {
+    if ([Environment]::UserInteractive -and -not [Console]::IsInputRedirected) {
+      $inputUrl = Read-Host "Bridge Function URL"
+      $apiUrl = $(if ($inputUrl -and $inputUrl.Trim()) { $inputUrl.Trim() } else { $null })
+    }
+    if (-not $apiUrl) { throw "ApiUrl is required (pass it or install first)." }
+  }
+
+  $isAdHoc = $false
+  if (-not $secret) {
+    if ([Environment]::UserInteractive -and -not [Console]::IsInputRedirected) {
+      $inputSec = Read-Host "Device secret (leave empty to generate ad-hoc)"
+      if ($inputSec -and $inputSec.Trim()) {
+        $secret = $inputSec.Trim()
+      }
+    }
+    if (-not $secret) {
+      $secret = New-RandomSecret
+      $isAdHoc = $true
+    }
+  }
+
+  [pscustomobject]@{ DeviceId = $deviceId; ApiUrl = $apiUrl; Secret = $secret; GraceSeconds = $grace; IsAdHoc = $isAdHoc }
 }
 
 function Get-AgentScript {
@@ -259,8 +342,18 @@ switch ($PSCmdlet.ParameterSetName) {
     # Install / Repair
     Assert-Admin
     $v = Resolve-ConfigValues
-    if ($ApiUrl -notmatch '^https://') { Write-Warn2 "ApiUrl does not start with https:// - double-check it" }
+    if ($v.ApiUrl -notmatch '^https://') { Write-Warn2 "ApiUrl does not start with https:// - double-check it" }
     if ($v.Secret -match 'REPLACE_ME|CHANGE_ME') { throw "Secret still looks like a placeholder." }
+
+    if ($v.IsAdHoc) {
+      Write-Ok "Generated ad-hoc secret for '$($v.DeviceId)': $($v.Secret)"
+    } else {
+      Write-Ok "Using secret for '$($v.DeviceId)'"
+    }
+
+    if ($RegisterAws) {
+      Register-AwsDevice -deviceId $v.DeviceId -secret $v.Secret -apiUrl $v.ApiUrl | Out-Null
+    }
 
     Save-Config ([pscustomobject]@{
       deviceId = $v.DeviceId; apiUrl = $v.ApiUrl; secret = $v.Secret; graceSeconds = $v.GraceSeconds
@@ -276,8 +369,22 @@ switch ($PSCmdlet.ParameterSetName) {
     if ($action) {
       Write-Ok "installation complete - Alexa can now turn '$($v.DeviceId)' OFF"
     } else {
-      Write-Warn2 "installed, but the bridge did not answer - check URL/secret (run: .\install-agent.ps1 -TestConnection)"
-      exit 2
+      Write-Warn2 "installed, but the bridge did not answer (or returned 401 Unauthorized)."
+      Write-Host ""
+      Write-Host "================ NEXT STEPS ================" -ForegroundColor Cyan
+      Write-Host "Device ID : $($v.DeviceId)"
+      Write-Host "Secret    : $($v.Secret)"
+      Write-Host ""
+      Write-Host "To register this device with your AWS stack, run:" -ForegroundColor Yellow
+      Write-Host "  .\scripts\wol.ps1 add-dev '$($v.DeviceId)|$($v.DeviceId)|auto|$($v.Secret)'" -ForegroundColor White
+      Write-Host "Or add '$($v.DeviceId)': '$($v.Secret)' to PC_SECRETS in wol-bridge Lambda configuration."
+      Write-Host ""
+      Write-Host "Once registered in AWS, test anytime with:" -ForegroundColor Cyan
+      Write-Host "  .\scripts\wol.ps1 status -Live" -ForegroundColor White
+      Write-Host "============================================" -ForegroundColor Cyan
+      if (-not $v.IsAdHoc) {
+        exit 2
+      }
     }
   }
 }

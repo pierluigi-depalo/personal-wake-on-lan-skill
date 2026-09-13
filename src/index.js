@@ -54,15 +54,15 @@ function normalizeMac(mac) {
 function getDevices() {
   if (devicesCache) return devicesCache; // parse una sola volta per container
 
-  let devices;
+  let devices = [];
   if (process.env.WOL_DEVICES) {
     devices = JSON.parse(process.env.WOL_DEVICES);
-    if (!Array.isArray(devices) || devices.length === 0) {
-      throw new Error("WOL_DEVICES must be a non-empty JSON array.");
+    if (!Array.isArray(devices)) {
+      throw new Error("WOL_DEVICES must be a JSON array.");
     }
-  } else {
+  } else if (process.env.MAC_ADDRESS) {
     const mac = normalizeMac(process.env.MAC_ADDRESS);
-    if (!mac) throw new Error("No devices configured. Set WOL_DEVICES or MAC_ADDRESS.");
+    if (!mac) throw new Error("Invalid MAC_ADDRESS configured.");
     devices = [{
       endpointId: process.env.ENDPOINT_ID || "wol-pc-001",
       friendlyName: process.env.PC_FRIENDLY_NAME || "PC",

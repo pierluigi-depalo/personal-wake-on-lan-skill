@@ -24,10 +24,11 @@ param(
   # Incremental mode: add one or more devices to an EXISTING deployment
   # (updates WOL_DEVICES + PC_SECRETS in place, no stack changes).
   # Each entry, repeatable:
-  #   'endpointId|FriendlyName|MAC'  full control
-  #   'endpointId|MAC'               friendly name defaults to endpointId
-  #   'endpointId|FriendlyName'      MAC auto-detected from this machine
-  #   'endpointId'                   both defaults applied
+  #   'endpointId|FriendlyName|MAC|Secret' full control with custom secret
+  #   'endpointId|FriendlyName|MAC'        auto-generate secret
+  #   'endpointId|MAC'                     friendly name defaults to endpointId
+  #   'endpointId|FriendlyName'            MAC auto-detected from this machine
+  #   'endpointId'                         all defaults applied
   # Auto-detection picks this machine's wired Ethernet adapter - run the
   # command ON the target PC, or pass the MAC explicitly for remote adds:
   #   -AddDevice 'gaming-rig|Gaming Rig','laptop|AA:BB:CC:DD:EE:FF'
@@ -39,7 +40,7 @@ param(
   [string]$SingleMacAddress = "",
   [string]$EndpointId = "wol-pc-001",
   [string]$FriendlyName = "PC",
-  [string]$PcSecretsJson = "",
+  [string]$PcSecretsJson = "{}",
   [string]$DynamoTableName = "AlexaEventTokens",
   # Empty = derived from Region below.
   [string]$EventGatewayUrl = "",
@@ -124,13 +125,14 @@ if ($AddDevice.Count -gt 0) {
 
   $devices = foreach ($entry in $AddDevice) {
     $parts = $entry -split '\|'
-    if ($parts.Count -lt 1 -or $parts.Count -gt 3) {
-      throw "bad -AddDevice entry '$entry' - expected 'endpointId|FriendlyName|MAC' (see header for the short forms)"
+    if ($parts.Count -lt 1 -or $parts.Count -gt 4) {
+      throw "bad -AddDevice entry '$entry' - expected 'endpointId|FriendlyName|MAC|Secret' (see header for short forms)"
     }
     $id = $parts[0].Trim()
     if ($id -notmatch '^[a-z0-9][a-z0-9-]{1,62}$') { throw "endpoint id '$id' must be a short slug." }
     $macToken = ''
     $name = ''
+    $customSecret = ''
     switch ($parts.Count) {
       1 { $macToken = 'auto' }
       2 {
@@ -138,12 +140,13 @@ if ($AddDevice.Count -gt 0) {
         else { $name = $parts[1].Trim(); $macToken = 'auto' }
       }
       3 { $name = $parts[1].Trim(); $macToken = $parts[2] }
+      4 { $name = $parts[1].Trim(); $macToken = $parts[2]; $customSecret = $parts[3].Trim() }
     }
     [pscustomobject]@{
       EndpointId   = $id
       FriendlyName = $(if ($name) { $name } else { $id })
       Mac          = Resolve-MacOrAuto $macToken
-      Secret       = New-RandomSecret
+      Secret       = $(if ($customSecret) { $customSecret } else { New-RandomSecret })
     }
   }
   $dups = @($devices | Group-Object EndpointId | Where-Object Count -gt 1)
@@ -228,11 +231,12 @@ if ($AddDevice.Count -gt 0) {
 
 # EU endpoint is the code default; other regions MUST override it.
 if ($AddDevice.Count -eq 0) {
-  foreach ($p in 'AlexaClientId', 'AlexaClientSecret', 'PcSecretsJson') {
+  foreach ($p in 'AlexaClientId', 'AlexaClientSecret') {
     if (-not $PSBoundParameters.ContainsKey($p)) {
       throw "$p is required for a full deployment (or use -AddDevice for incremental mode)."
     }
   }
+  if (-not $PcSecretsJson) { $PcSecretsJson = "{}" }
 }
 if (-not $EventGatewayUrl) {
   $EventGatewayUrl = switch ($Region) {

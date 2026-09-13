@@ -61,6 +61,19 @@ tui_input() { # tui_input <prompt> <default> -> stdout
   printf '%s' "$val"
 }
 
+tui_input_optional() { # tui_input_optional <prompt> <default> -> stdout
+  local prompt="$1" def="${2:-}" val=""
+  case "$TUI" in
+    whiptail) val=$(whiptail --title "$(tui_title)" --inputbox "$prompt" 0 0 "$def" 3>&1 1>&2 2>&3) || exit 1 ;;
+    dialog)   val=$(dialog   --title "$(tui_title)" --inputbox "$prompt" 0 0 "$def" 3>&1 1>&2 2>&3) || exit 1 ;;
+    *)
+      read -r -p "$prompt [$def]: " val
+      val="${val:-$def}"
+      ;;
+  esac
+  printf '%s' "$val"
+}
+
 tui_yesno() { # tui_yesno <question>
   case "$TUI" in
     whiptail) whiptail --title "$(tui_title)" --yesno "$1" 0 0 ;;
@@ -196,18 +209,79 @@ do_test() {
   [ "$action" = "shutdown" ] && warn "fresh shutdown pending — the PC would power off now!"
 }
 
+register_aws() {
+  if ! have aws; then
+    warn "AWS CLI not found — skipping auto-registration in AWS"
+    return 1
+  fi
+  if ! aws sts get-caller-identity --output text --query Account >/dev/null 2>&1; then
+    warn "AWS credentials not configured — skipping auto-registration in AWS"
+    return 1
+  fi
+  local reg="eu-west-1"
+  if [[ "$API_URL" =~ lambda-url\.([a-z0-9-]+)\.on\.aws ]]; then
+    reg="${BASH_REMATCH[1]}"
+  fi
+  step "registering device '$DEVICE_ID' in wol-bridge Lambda (region $reg)"
+  python3 - "$DEVICE_ID" "$SECRET" "$reg" <<'PY' || return 1
+import json, sys, subprocess
+dev_id, secret, reg = sys.argv[1:]
+cmd = ["aws", "lambda", "get-function-configuration", "--function-name", "wol-bridge", "--region", reg, "--output", "json"]
+res = subprocess.run(cmd, capture_output=True, text=True)
+if res.returncode != 0:
+    print(f"could not read wol-bridge: {res.stderr}", file=sys.stderr)
+    sys.exit(1)
+cfg = json.loads(res.stdout)
+env = (cfg.get("Environment") or {}).get("Variables") or {}
+secrets = {}
+if env.get("PC_SECRETS"):
+    try: secrets = json.loads(env["PC_SECRETS"])
+    except Exception: pass
+secrets[dev_id] = secret
+env["PC_SECRETS"] = json.dumps(secrets, separators=(",", ":"))
+upd = subprocess.run(["aws", "lambda", "update-function-configuration", "--function-name", "wol-bridge", "--region", reg, "--environment", json.dumps({"Variables": env})], capture_output=True, text=True)
+if upd.returncode != 0:
+    print(f"update failed: {upd.stderr}", file=sys.stderr)
+    sys.exit(1)
+print("registered secret in AWS wol-bridge")
+PY
+  ok "registered secret on AWS"
+}
+
 do_install() {
   need_root
   resolve_values
-  # Non-interactive when all three values arrive via env/config.
-  if [ -z "${DEVICE_ID}" ] || [ -z "${API_URL}" ] || [ -z "${SECRET}" ]; then
+  REGISTER_AWS=0
+  for arg in "$@"; do
+    case "$arg" in
+      --register-aws) REGISTER_AWS=1 ;;
+    esac
+  done
+
+  # Prompt if DEVICE_ID or API_URL missing
+  if [ -z "${DEVICE_ID}" ] || [ -z "${API_URL}" ]; then
     tui_msg "This will install the wol-agent polling service so Alexa can turn this PC OFF."
     DEVICE_ID=$(tui_input "Device ID (must match WOL_DEVICES on the skill)" "${DEVICE_ID:-wol-pc-001}")
     API_URL=$(tui_input "Bridge Function URL" "${API_URL:-https://<url>.lambda-url.<region>.on.aws/}")
-    SECRET=$(tui_input "Device secret (must match PC_SECRETS)" "${SECRET:-}")
+    if [ -z "${SECRET}" ]; then
+      SECRET=$(tui_input_optional "Device secret (leave empty to generate ad-hoc)" "")
+    fi
     GRACE=$(tui_input "Shutdown grace seconds" "$GRACE")
   fi
   case "$API_URL" in https://*) ;; *) warn "API_URL should start with https://" ;; esac
+
+  IS_ADHOC=0
+  if [ -z "${SECRET}" ]; then
+    SECRET=$(openssl rand -hex 32 2>/dev/null || python3 -c 'import secrets; print(secrets.token_hex(32))' 2>/dev/null || head -c32 /dev/urandom | od -An -tx1 | tr -d ' \n')
+    IS_ADHOC=1
+    ok "Generated ad-hoc secret for '$DEVICE_ID': $SECRET"
+  else
+    ok "Using secret for '$DEVICE_ID'"
+  fi
+
+  if [ "$REGISTER_AWS" -eq 1 ]; then
+    register_aws || true
+  fi
 
   save_conf
   preflight
@@ -224,8 +298,22 @@ do_install() {
     warn "service not running yet — check: journalctl -u $SERVICE_NAME -e"
   fi
   step "verifying bridge connectivity"
-  action=$(poll_once "ON" 2>/dev/null) && ok "bridge replied action='$action'" ||
-    warn "bridge did not answer — check URL/secret (run: $0 test)"
+  if action=$(poll_once "ON" 2>/dev/null); then
+    ok "bridge replied action='$action'"
+  else
+    warn "installed, but the bridge did not answer (or returned 401 Unauthorized)."
+    printf '\n================ NEXT STEPS ================\n'
+    echo "Device ID : $DEVICE_ID"
+    echo "Secret    : $SECRET"
+    echo ""
+    echo "To register this device with your AWS stack, run:"
+    echo "  sudo ./scripts/wol.sh add-dev '$DEVICE_ID|$DEVICE_ID|auto|$SECRET'"
+    echo "Or add '$DEVICE_ID': '$SECRET' to PC_SECRETS in wol-bridge Lambda configuration."
+    echo ""
+    echo "Once registered in AWS, test anytime with:"
+    echo "  ./scripts/wol.sh status --live"
+    printf '============================================\n'
+  fi
 }
 
 do_repair() {

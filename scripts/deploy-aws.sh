@@ -13,10 +13,11 @@
 # Incremental mode - add one or more devices to an EXISTING deployment
 # (updates WOL_DEVICES + PC_SECRETS in place, no stack changes). Repeatable,
 # each entry in one of these forms:
-#   'endpointId|FriendlyName|MAC'  full control
+#   'endpointId|FriendlyName|MAC|Secret' full control with custom secret
+#   'endpointId|FriendlyName|MAC'  auto-generate secret
 #   'endpointId|MAC'               friendly name defaults to endpointId
 #   'endpointId|FriendlyName'      MAC auto-detected from this machine
-#   'endpointId'                   both defaults applied
+#   'endpointId'                   all defaults applied
 # Auto-detection picks this machine's wired interface - run ON the target PC,
 # or pass the MAC explicitly for remote adds:
 #   ./deploy-aws.sh --add-device 'gaming-rig|Gaming Rig' \
@@ -103,11 +104,11 @@ if [ "${#ADD_DEVICES[@]}" -gt 0 ]; then
   is_mac() { printf '%s' "$1" | grep -Eq '^[0-9a-fA-F]{2}([-:]?[0-9a-fA-F]{2}){5}$'; }
 
   for entry in "${ADD_DEVICES[@]}"; do
-    IFS='|' read -r e_id e_name e_mac <<< "$entry"
+    IFS='|' read -r e_id e_name e_mac e_sec <<< "$entry"
     e_id=$(printf '%s' "$e_id" | tr -d '[:space:]')
     printf '%s' "$e_id" | grep -Eq '^[a-z0-9][a-z0-9-]{1,62}$' ||
       die "endpoint id '$e_id' must be a short slug (letters/digits/dashes)"
-    # Forms: 'id' | 'id|name' | 'id|MAC' | 'id|name|MAC' (MAC may be 'auto').
+    # Forms: 'id' | 'id|name' | 'id|MAC' | 'id|name|MAC' | 'id|name|MAC|secret' (MAC may be 'auto').
     if [ -z "$e_name" ] && [ -z "${e_mac:-}" ]; then
       e_mac="auto"                                          # 'id'
     elif [ -z "${e_mac:-}" ]; then                          # 'id|name' | 'id|MAC'
@@ -130,7 +131,10 @@ if [ "${#ADD_DEVICES[@]}" -gt 0 ]; then
       e_mac=$(printf '%s' "$mac_norm" | sed 's/../&:/g; s/:$//')
     fi
     [ -n "$e_name" ] || e_name="$e_id"
-    secret=$(openssl rand -hex 32 2>/dev/null || head -c32 /dev/urandom | od -An -tx1 | tr -d ' \n')
+    secret="${e_sec:-}"
+    if [ -z "$secret" ]; then
+      secret=$(openssl rand -hex 32 2>/dev/null || head -c32 /dev/urandom | od -An -tx1 | tr -d ' \n')
+    fi
     printf '%s\t%s\t%s\t%s\n' "$e_id" "$e_name" "$e_mac" "$secret" >> "$DEVS_FILE"
   done
   if [ "$(cut -f1 "$DEVS_FILE" | sort | uniq -d | wc -l)" -gt 0 ]; then
@@ -268,7 +272,7 @@ fi
 
 [ -n "$ALEXA_CLIENT_ID" ]     || { echo "--client-id required" >&2; exit 1; }
 [ -n "$ALEXA_CLIENT_SECRET" ] || { echo "--client-secret required" >&2; exit 1; }
-[ -n "$PC_SECRETS_JSON" ]     || { echo "--secrets required" >&2; exit 1; }
+PC_SECRETS_JSON="${PC_SECRETS_JSON:-{\}}"
 
 case "$REGION" in
   us-east-1|us-west-2|eu-west-1|ap-northeast-1) ;;
