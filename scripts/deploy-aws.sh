@@ -52,6 +52,22 @@ ok()   { printf '  OK  %s\n' "$*"; }
 warn() { printf '    !!  %s\n' "$*" >&2; }
 die()  { printf '  XX  %s\n' "$*" >&2; exit 1; }
 
+ensure_aws() {
+  if ! command -v aws >/dev/null 2>&1; then
+    for dir in /usr/local/bin /usr/bin /opt/aws-cli/bin "${HOME:-}/.local/bin" ${SUDO_USER:+"/home/$SUDO_USER/.local/bin"}; do
+      if [ -n "$dir" ] && [ -x "$dir/aws" ]; then
+        export PATH="$PATH:$dir"
+        break
+      fi
+    done
+  fi
+  command -v aws >/dev/null 2>&1 || die "AWS CLI v2 not found"
+  if [ -n "${SUDO_USER:-}" ] && [ ! -d "${HOME:-}/.aws" ] && [ -d "/home/$SUDO_USER/.aws" ]; then
+    export AWS_CONFIG_FILE="/home/$SUDO_USER/.aws/config"
+    export AWS_SHARED_CREDENTIALS_FILE="/home/$SUDO_USER/.aws/credentials"
+  fi
+}
+
 while [ $# -gt 0 ]; do
   case "$1" in
     -s|--stack)          STACK_NAME="$2"; shift 2 ;;
@@ -141,7 +157,7 @@ if [ "${#ADD_DEVICES[@]}" -gt 0 ]; then
     die "duplicate endpoint ids in --add-device list"
   fi
 
-  command -v aws >/dev/null 2>&1 || die "AWS CLI v2 not found"
+  ensure_aws
   command -v python3 >/dev/null 2>&1 || die "python3 required for JSON handling"
   aws sts get-caller-identity --output text --query Account >/dev/null ||
     die "AWS credentials not usable"
@@ -313,7 +329,7 @@ if [ "$STANDALONE" = "1" ]; then
   SRC_BRIDGE="$TMP/bridge.js"
 fi
 
-command -v aws >/dev/null 2>&1 || die "AWS CLI v2 not found - install it and run 'aws configure'"
+ensure_aws
 step "checking AWS credentials"
 aws sts get-caller-identity --output text --query Account >/dev/null ||
   die "AWS credentials not usable - run 'aws configure'"

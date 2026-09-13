@@ -41,12 +41,12 @@ through to the underlying script:
 
 ```bash
 # Linux/macOS
-sudo bash ./scripts/wol.sh deploy --region eu-west-1 ...          # full AWS deploy
-sudo bash ./scripts/wol.sh add-dev 'gaming-rig|Gaming Rig'        # incremental device add
-sudo bash ./scripts/wol.sh install --id wol-pc-001 --url "https://<url>.../" --secret REPLACE_ME
+bash ./scripts/wol.sh deploy --region eu-west-1 ...          # full AWS deploy
+bash ./scripts/wol.sh add-dev 'gaming-rig|Gaming Rig'        # incremental device add
+sudo bash ./scripts/wol.sh install --id wol-pc-001 --url "https://<url>.../"
 bash ./scripts/wol.sh status --live
 sudo bash ./scripts/wol.sh uninstall --purge
-bash ./scripts/wol.sh remove --delete-table                       # AWS teardown
+bash ./scripts/wol.sh remove --delete-table                  # AWS teardown
 ```
 
 The dispatcher exit code mirrors the delegate script's, so it is safe to use in

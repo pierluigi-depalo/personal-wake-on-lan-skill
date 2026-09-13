@@ -23,6 +23,22 @@ note() { printf '    --  %s\n' "$*"; }
 warn() { printf '    !!  %s\n' "$*" >&2; }
 die()  { printf '  XX  %s\n' "$*" >&2; exit 1; }
 
+ensure_aws() {
+  if ! command -v aws >/dev/null 2>&1; then
+    for dir in /usr/local/bin /usr/bin /opt/aws-cli/bin "${HOME:-}/.local/bin" ${SUDO_USER:+"/home/$SUDO_USER/.local/bin"}; do
+      if [ -n "$dir" ] && [ -x "$dir/aws" ]; then
+        export PATH="$PATH:$dir"
+        break
+      fi
+    done
+  fi
+  command -v aws >/dev/null 2>&1 || die "AWS CLI v2 not found"
+  if [ -n "${SUDO_USER:-}" ] && [ ! -d "${HOME:-}/.aws" ] && [ -d "/home/$SUDO_USER/.aws" ]; then
+    export AWS_CONFIG_FILE="/home/$SUDO_USER/.aws/config"
+    export AWS_SHARED_CREDENTIALS_FILE="/home/$SUDO_USER/.aws/credentials"
+  fi
+}
+
 while [ $# -gt 0 ]; do
   case "$1" in
     -r|--region)          REGION="$2"; shift 2 ;;
@@ -38,7 +54,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-command -v aws >/dev/null 2>&1 || die "AWS CLI v2 not found"
+ensure_aws
 aws sts get-caller-identity --output text --query Account >/dev/null ||
   die "AWS credentials not usable"
 
